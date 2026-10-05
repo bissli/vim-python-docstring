@@ -1,1 +1,1 @@
-DocstringUnavailable: Docstring ERROR: Doctring cannot be created for selected object
+DocstringUnavailable: Docstring ERROR: Docstring cannot be created for selected object

@@ -1,4 +1,5 @@
 import abc
+from collections.abc import Iterator
 
 import vim
 
@@ -38,12 +39,6 @@ class Enviroment(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def current_line_nr(self) -> int:
-        """0-based row of the cursor.
-        """
-
-    @property
-    @abc.abstractmethod
     def current_line(self) -> str:
         """Text of the cursor's line.
         """
@@ -61,12 +56,12 @@ class Enviroment(abc.ABC):
         """
 
     @abc.abstractmethod
-    def lines_preceding_cursor(self):
+    def lines_preceding_cursor(self) -> Iterator[str]:
         """Lines above the cursor, nearest first.
         """
 
     @abc.abstractmethod
-    def lines_following_cursor(self):
+    def lines_following_cursor(self) -> Iterator[tuple[int, str]]:
         """(row, line) pairs from the cursor's line down, row 0-based.
         """
 
@@ -102,10 +97,6 @@ class VimEnviroment(Enviroment):
             return self._get_var('g:vpd_indent')
 
     @property
-    def current_line_nr(self) -> int:
-        return vim.current.window.cursor[0] - 1
-
-    @property
     def current_line(self) -> str:
         return vim.current.line
 
@@ -114,12 +105,12 @@ class VimEnviroment(Enviroment):
         for line in reversed(text.split('\n')):
             vim.current.buffer.append(line, line_nr)
 
-    def lines_preceding_cursor(self):
+    def lines_preceding_cursor(self) -> Iterator[str]:
         buffer = vim.current.buffer
         for row in range(vim.current.window.cursor[0] - 2, -1, -1):
             yield buffer[row]
 
-    def lines_following_cursor(self):
+    def lines_following_cursor(self) -> Iterator[tuple[int, str]]:
         buffer = vim.current.buffer
         cursor_row = vim.current.window.cursor[0] - 1
         current_row = cursor_row

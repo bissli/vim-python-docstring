@@ -1,9 +1,10 @@
-"""MethodVisitor's list of raised exceptions.
+"""What the asthelper visitors collect from parsed source.
 """
 import ast
+import inspect
 
 import pytest
-from asthelper import MethodVisitor
+from asthelper import ClassInstanceNameExtractor, ClassVisitor, MethodVisitor
 
 
 def raises_of(source: str) -> list[str]:
@@ -243,3 +244,317 @@ def test_first_positional_argument_is_the_one_dropped(signature, bound, expected
     visitor = MethodVisitor(bound=bound)
     visitor.visit(ast.parse(f'{signature}\n    pass\n'))
     assert [argument['arg'] for argument in visitor.arguments] == expected
+
+
+@pytest.mark.parametrize(
+    ('methods', 'expected'),
+    [
+        (
+            ('    @staticmethod\n    def f():\n        pass\n'
+             '    def run(self):\n        self.a = 1\n'),
+            ['a'],
+            ),
+        (
+            ('    def f():\n        pass\n'
+             '    def run(self):\n        self.a = 1\n'),
+            ['a'],
+            ),
+        ('    def __init__(this, /):\n        this.a = 1\n', ['a']),
+        ('    def m(this, /, x):\n        this.a = x\n', ['a']),
+        (
+            ('    def set(self, v):\n        self.v = v\n'
+             '    @staticmethod\n    def make(cfg):\n        cfg.port = 1\n'),
+            ['v'],
+            ),
+        (
+            ('    async def run(self):\n'
+             '        def cb(item):\n            item.done = True\n'
+             '        self.task = cb\n'),
+            ['task'],
+            ),
+        ],
+    ids=[
+        'static-no-arg',
+        'no-arg',
+        'posonly-init',
+        'posonly-method',
+        'static-last',
+        'async-nested-def',
+        ])
+def test_class_attributes_use_the_instance_argument(methods, expected):
+    """Verify the class lists attributes of its methods' instance argument.
+
+    Mutation: reading node.args.args[0] unguarded (IndexError on f() and
+    on (this, /)), leaving out posonlyargs (takes x), letting a
+    staticmethod set the name (takes cfg), or descending into an async
+    def (takes item).
+    Oracle: the observed `list index out of range` crash; README Features,
+    a staticmethod's first argument is not its instance; Python binds the
+    instance to the first positional parameter.
+    """
+    tree = ast.parse(f'class A:\n{methods}')
+    extractor = ClassInstanceNameExtractor()
+    extractor.visit(tree)
+    visitor = ClassVisitor(extractor.instance_name)
+    visitor.visit(tree)
+    assert list(visitor.attributes) == expected
+
+
+@pytest.mark.parametrize(
+    ('body', 'expected'),
+    [
+        ('    yield from x\n', True),
+        ('    def h():\n        yield from x\n    return h\n', False),
+        ],
+    ids=['top-level', 'nested-def'])
+def test_yield_from_marks_only_its_own_function(body, expected):
+    """Verify `yield from` makes its function a generator, not the outer one.
+
+    Mutation: no visit_YieldFrom (the first case gives False), or a nested
+    def's yields merged into its parent (the second case gives True).
+    Oracle: Python's ast docs class YieldFrom with Yield as a yield
+    expression, and a yield makes only its innermost def a generator.
+    """
+    visitor = MethodVisitor()
+    visitor.visit(ast.parse(f'def g(x):\n{body}'))
+    assert visitor.yields is expected
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        '    return lambda: (yield x)\n',
+        '    f = lambda: (yield from x)\n    return f\n',
+        '    f = lambda y=(yield x): y\n    return f\n',
+        ],
+    ids=['lambda-yield', 'lambda-yield-from', 'lambda-default'])
+def test_lambda_yield_marks_only_the_lambda(body):
+    """Verify a yield in a lambda body leaves its def a plain function.
+
+    Mutation: visiting the lambda body (the first two cases give True), or
+    skipping the whole lambda (the default case gives False, though the
+    def evaluates the default).
+    Oracle: inspect.isgeneratorfunction on the same source.
+    """
+    source = f'def g(x):\n{body}'
+    namespace = {}
+    exec(source, namespace)
+    visitor = MethodVisitor()
+    visitor.visit(ast.parse(source))
+    assert visitor.yields is inspect.isgeneratorfunction(namespace['g'])
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        '    def h(x=(yield)):\n        pass\n    return h\n',
+        '    def h(*, x=(yield)):\n        pass\n    return h\n',
+        '    @(yield)\n    def h():\n        pass\n    return h\n',
+        '    async def h(x=(yield)):\n        pass\n    return h\n',
+        ],
+    ids=['default', 'kw-default', 'decorator', 'async-default'])
+def test_nested_def_header_yield_marks_the_outer_def(body):
+    """Verify a yield in a nested def's default or decorator marks its parent.
+
+    Mutation: visiting the nested def's defaults and decorators inside its
+    own visitor (every case gives False).
+    Oracle: inspect.isgeneratorfunction on the same source.
+    """
+    source = f'def g():\n{body}'
+    namespace = {}
+    exec(source, namespace)
+    visitor = MethodVisitor()
+    visitor.visit(ast.parse(source))
+    assert visitor.yields is inspect.isgeneratorfunction(namespace['g'])
+
+
+@pytest.mark.parametrize(
+    'header',
+    ['def h(x: (yield)):', 'def h() -> (yield):'],
+    ids=['argument', 'return'])
+def test_nested_def_annotation_yield_marks_the_outer_def(header):
+    """Verify a yield in a nested def's annotation marks its parent.
+
+    Mutation: visiting only the nested def's defaults and decorators in
+    the parent (both cases give False).
+    Oracle: Python 3.11 evaluates the annotations when the def runs, so
+    inspect.isgeneratorfunction gives True there; 3.14 and the
+    annotations future import reject the source, so no valid code differs.
+    """
+    visitor = MethodVisitor()
+    visitor.visit(ast.parse(f'def g():\n    {header}\n        pass\n    return h\n'))
+    assert visitor.yields is True
+
+
+def class_attributes_of(source: str) -> list[str]:
+    """Attribute names ClassController lists for the class in source.
+    """
+    tree = ast.parse(source)
+    extractor = ClassInstanceNameExtractor()
+    extractor.visit(tree)
+    visitor = ClassVisitor(extractor.instance_name)
+    visitor.visit(tree)
+    return list(visitor.attributes)
+
+
+def test_classmethod_first_argument_is_not_the_instance():
+    """Verify a trailing classmethod leaves the instance name to the method.
+
+    Mutation: letting a classmethod set the instance name (lists count,
+    drops x).
+    Oracle: Python binds the class, not the instance, to a classmethod's
+    first parameter; README Features, a class docstring lists its
+    attributes.
+    """
+    source = (
+        'class A:\n'
+        '    def run(self):\n'
+        '        self.x = 1\n'
+        '    @classmethod\n'
+        '    def make(cls):\n'
+        '        cls.count = 0\n')
+    assert class_attributes_of(source) == ['x']
+
+
+@pytest.mark.parametrize(
+    'method',
+    [
+        'def __new__(cls):\n        return object.__new__(cls)',
+        'def __init_subclass__(cls):\n        cls.reg = 1',
+        'def __class_getitem__(cls, item):\n        cls.reg = item',
+        ],
+    ids=['new', 'init-subclass', 'class-getitem'])
+def test_implicit_class_first_methods_are_not_the_instance(method):
+    """Verify a trailing undecorated class-first method leaves the name alone.
+
+    Mutation: checking only the staticmethod and classmethod decorators
+    (instance name becomes cls, so the class lists [] or ['reg']).
+    Oracle: Python's data model docs make __new__ an implicit staticmethod
+    taking the class, and __init_subclass__ and __class_getitem__ implicit
+    classmethods.
+    """
+    source = (
+        'class A:\n'
+        '    def run(self):\n'
+        '        self.x = 1\n'
+        f'    {method}\n')
+    assert class_attributes_of(source) == ['x']
+
+
+@pytest.mark.parametrize(
+    ('nested', 'expected'),
+    [
+        ('def cb(self):\n            self.y = 1\n', ['x']),
+        ('def cb():\n            self.y = 1\n', ['y', 'x']),
+        ('def cb(item, self=self):\n            self.y = item\n', ['y', 'x']),
+        ('def cb(*, self=self):\n            self.y = 1\n', ['y', 'x']),
+        ('def cb(self=None):\n            self.y = 1\n', ['x']),
+        ],
+    ids=['own-self', 'closure', 'default-self', 'kw-default-self', 'other-default'])
+def test_nested_def_with_its_own_instance_name_is_skipped(nested, expected):
+    """Verify a def in a method that rebinds self adds none of its attributes.
+
+    Mutation: visiting every nested def (own-self lists y), skipping every
+    nested def (closure drops y), ignoring a self=self default (the
+    default-self cases drop y), or keeping any def with a self default
+    (other-default lists y).
+    Oracle: Python scoping, a parameter named self shadows the method's
+    self, and a closure or a self=self default sets the method's instance.
+    """
+    source = (
+        'class A:\n'
+        '    def run(self):\n'
+        f'        {nested}'
+        '        self.x = cb\n')
+    assert class_attributes_of(source) == expected
+
+
+@pytest.mark.parametrize(
+    ('body', 'expected'),
+    [
+        (
+            ('    def run(self):\n        self.x = 1\n'
+             '    class B:\n'
+             '        def __init__(other):\n            other.b = 2\n'),
+            ['x'],
+            ),
+        (
+            ('    def __init__(self):\n        self.a = 1\n'
+             '    class B:\n'
+             '        def __init__(self):\n            self.b = 2\n'),
+            ['a'],
+            ),
+        ],
+    ids=['nested-init-name', 'nested-class-self'])
+def test_nested_class_attributes_stay_out_of_the_outer_class(body, expected):
+    """Verify a nested class sets neither the instance name nor attributes.
+
+    Mutation: letting a nested __init__ set the instance name
+    (nested-init-name drops x), or visiting a class nested in the class
+    body (nested-class-self adds b).
+    Oracle: README Features, a class docstring lists the class's
+    attributes; a nested class's first parameter binds its own instance.
+    """
+    assert class_attributes_of(f'class A:\n{body}') == expected
+
+
+@pytest.mark.parametrize(
+    ('nested', 'expected'),
+    [
+        (
+            ('class H:\n'
+             '            def handle(inner):\n                self.last = inner\n'),
+            ['last', 'h'],
+            ),
+        ('class H:\n            self.z = 1\n', ['z', 'h']),
+        (
+            ('class H:\n'
+             '            def __init__(self):\n                self.y = 1\n'),
+            ['h'],
+            ),
+        (
+            ('class H:\n'
+             '            def m(self=self):\n                self.k = 1\n'),
+            ['h'],
+            ),
+        (
+            ('class H:\n'
+             '            @staticmethod\n'
+             '            def m(self=self):\n                self.k = 1\n'),
+            ['k', 'h'],
+            ),
+        (
+            ('class H:\n'
+             '            @builtins.staticmethod\n'
+             '            def m(self=self):\n                self.k = 1\n'),
+            ['k', 'h'],
+            ),
+        ],
+    ids=[
+        'method-closure',
+        'class-body',
+        'own-self-method',
+        'method-self-default',
+        'static-self-default',
+        'qualified-static-self-default',
+        ])
+def test_class_in_method_sets_the_method_instance(nested, expected):
+    """Verify a class defined in a method adds what it sets on self.
+
+    Mutation: skipping every class met in a method (the first two cases
+    drop last or z), visiting its methods as the outer class's own
+    (own-self-method lists y), or letting a self=self default exempt a
+    method's bound first parameter (method-self-default lists k), or
+    matching only a bare staticmethod name (qualified-static-self-default
+    drops k).
+    Oracle: Python scoping, a class body and its methods see the
+    enclosing method's self unless a parameter rebinds it, and H().m()
+    binds H's instance to m's first parameter; running each source, then
+    H().handle() or H().m(), sets exactly the expected names on A().
+    """
+    source = (
+        'class A:\n'
+        '    def run(self):\n'
+        f'        {nested}'
+        '        self.h = H\n')
+    assert class_attributes_of(source) == expected

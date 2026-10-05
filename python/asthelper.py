@@ -40,8 +40,10 @@ class ClassInstanceNameExtractor(ast.NodeVisitor):
     Attributes
     ----------
     instance_name : str
-        The first argument of __init__, else of the last method, else
-        'self'.
+        The first positional argument of __init__, else of the last method
+        that has one and is not a staticmethod or classmethod, else 'self'.
+        __new__, __init_subclass__ and __class_getitem__ count as such
+        without a decorator. A nested class's methods never count.
     set : bool
         True once __init__ has set instance_name.
     """
@@ -49,16 +51,35 @@ class ClassInstanceNameExtractor(ast.NodeVisitor):
     def __init__(self) -> None:
         self.instance_name = 'self'
         self.set = False
+        self._class_seen = False
         super().__init__()
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        """Visit the first class met, skipping each class nested in it.
+        """
+        if not self._class_seen:
+            self._class_seen = True
+            self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         """Take node's first argument as instance_name unless __init__ set it.
         """
+        positional = [*node.args.posonlyargs, *node.args.args]
+        is_static_or_class = (
+            node.name in {'__new__', '__init_subclass__', '__class_getitem__'}
+            or any(
+                isinstance(decorator, ast.Name)
+                and decorator.id in {'staticmethod', 'classmethod'}
+                for decorator in node.decorator_list))
+        if not positional or is_static_or_class:
+            return
         if node.name == '__init__':
-            self.instance_name = node.args.args[0].arg
+            self.instance_name = positional[0].arg
             self.set = True
         elif not self.set:
-            self.instance_name = node.args.args[0].arg
+            self.instance_name = positional[0].arg
+
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     def generic_visit(self, node: ast.AST) -> None:
         """Visit node's children until __init__ sets instance_name.
@@ -79,13 +100,72 @@ class ClassVisitor(ast.NodeVisitor):
     ----------
     attributes : dict[str, None]
         Attribute names of instance_name that an assignment or annotated
-        assignment target sets, in source order.
+        assignment target sets, in source order. A class nested in the
+        class body adds none. A def inside a method that takes a parameter
+        named instance_name adds none, unless the parameter defaults to
+        instance_name and is not the bound first parameter of a method.
     """
 
     def __init__(self, instance_name: str) -> None:
         super().__init__()
         self.attributes = {}
         self.instance_name = instance_name
+        self._class_seen = False
+        self._in_method = False
+        self._in_class_body = False
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        """Visit the first class met and each class in a method.
+        """
+        if not self._class_seen or self._in_method:
+            self._class_seen = True
+            in_class_body, self._in_class_body = self._in_class_body, True
+            self.generic_visit(node)
+            self._in_class_body = in_class_body
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        """Visit a method, or a def in one that does not rebind instance_name.
+        """
+        arguments = node.args
+        positional = [*arguments.posonlyargs, *arguments.args]
+        first_defaulted = len(positional) - len(arguments.defaults)
+        defaulted = [
+            *zip(positional[first_defaulted:], arguments.defaults),
+            *zip(arguments.kwonlyargs, arguments.kw_defaults),
+            ]
+        instance_defaulted = {
+            arg.arg
+            for arg, default in defaulted
+            if isinstance(default, ast.Name) and default.id == self.instance_name
+            }
+        is_static = any(
+            (isinstance(decorator, ast.Name) and decorator.id == 'staticmethod')
+            or (isinstance(decorator, ast.Attribute)
+                and decorator.attr == 'staticmethod')
+            for decorator in node.decorator_list)
+        if self._in_class_body and not is_static and positional:
+            instance_defaulted.discard(positional[0].arg)
+        parameter_names = {
+            arg.arg
+            for arg in [
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                arguments.vararg,
+                arguments.kwarg,
+                ]
+            if arg is not None
+            }
+        if (self._in_method
+            and self.instance_name in parameter_names - instance_defaulted):
+            return
+        in_method, self._in_method = self._in_method, True
+        in_class_body, self._in_class_body = self._in_class_body, False
+        self.generic_visit(node)
+        self._in_method = in_method
+        self._in_class_body = in_class_body
+
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Assign(self, node: ast.Assign) -> None:
         """Add the instance attributes that node's targets set.
@@ -153,10 +233,16 @@ class MethodVisitor(ast.NodeVisitor):
         ----------
         node : ast.FunctionDef or ast.AsyncFunctionDef
             A def met while visiting. A parent visitor also takes its
-            arguments, returns and yields.
+            arguments, returns and yields. Its decorators, defaults and
+            annotations count as this visitor's code, where the def
+            evaluates them.
         """
         new_visitor = MethodVisitor(parent=False)
-        new_visitor.generic_visit(node)
+        for statement in node.body:
+            new_visitor.visit(statement)
+        for header_part in [*node.decorator_list, node.args, node.returns]:
+            if header_part is not None:
+                self.visit(header_part)
         self.raises |= new_visitor.raises
 
         if self.parent:
@@ -290,11 +376,18 @@ class MethodVisitor(ast.NodeVisitor):
         super().generic_visit(node)
         self._handlers.pop()
 
-    def visit_Yield(self, node: ast.Yield) -> None:
+    def visit_Yield(self, node: ast.Yield | ast.YieldFrom) -> None:
         """Mark the function as a generator.
         """
         self.yields = True
         super().generic_visit(node)
+
+    visit_YieldFrom = visit_Yield
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        """Visit node's defaults, leaving body yields to the lambda.
+        """
+        self.visit(node.args)
 
     def visit_Return(self, node: ast.Return) -> None:
         """Mark the function as returning, bare `return` included.

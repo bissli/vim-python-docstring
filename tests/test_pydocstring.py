@@ -190,27 +190,27 @@ def test_full_docstring_ignores_a_triple_quote_inside_a_string(vim):
             ['a'],
             ),
         (
-            'class Maker:\n    @classmethod\n    def make(klass, a):\n'
-            '        return a\n',
+            ('class Maker:\n    @classmethod\n    def make(klass, a):\n'
+             '        return a\n'),
             3,
             ['a'],
             ),
         (
-            'class Shape:\n    def area(self):\n        def helper(item):\n'
-            '            return item\n        return helper\n',
+            ('class Shape:\n    def area(self):\n        def helper(item):\n'
+             '            return item\n        return helper\n'),
             3,
             ['item'],
             ),
         ('def f(this, a):\n    return a\n', 1, ['this', 'a']),
         (
-            'class A:\n    @staticmethod\n    def g(a):\n        pass\n\n'
-            '    def h(this, b):\n        pass\n',
+            ('class A:\n    @staticmethod\n    def g(a):\n        pass\n\n'
+             '    def h(this, b):\n        pass\n'),
             6,
             ['b'],
             ),
         (
-            'class A:\n    @staticmethod\n    @deco(\n        1)\n'
-            '    def f(a):\n        pass\n',
+            ('class A:\n    @staticmethod\n    @deco(\n        1)\n'
+             '    def f(a):\n        pass\n'),
             5,
             ['a'],
             ),
@@ -236,13 +236,43 @@ def test_method_first_argument_is_dropped_by_context(vim, source, row, expected)
 
 
 def test_full_docstring_tolerates_bytes_that_are_not_utf8_below(vim):
-    """Verify a surrogate-escaped byte in a later function does not block f.
+    """Verify a surrogate-escaped byte on the line below f does not block f.
 
     Mutation: letting tokenize's UnicodeEncodeError out of
-    BufferReader.inside_string, which fails the whole command.
+    BufferReader.tokenize_to, which fails the whole command. Caught on
+    Python 3.12+ only: 3.11's tokenizer reads str lines and never
+    encodes them, so the error cannot arise there.
     Oracle: hand-written Google docstring for f alone.
     """
-    source = 'def f(a):\n    return a\n\n\ndef g(b):\n    s = "caf\udce9"\n'
+    source = 'def f(a):\n    return a\n\n\ns = "caf\udce9"\n'
+    vim.load(source, 1, {'python_style': 'google'})
+    Docstring().full_docstring()
+    assert vim.current.buffer[:10] == [
+        'def f(a):',
+        '    """',
+        '',
+        '    Args:',
+        '        a:',
+        '',
+        '    Returns:',
+        '        ',
+        '',
+        '    """',
+        ]
+
+
+def test_full_docstring_reads_a_def_using_non_ascii_names(vim):
+    """Verify a name 3.11 tokenizes as ERRORTOKEN does not end tokenizing.
+
+    Mutation: counting every ERRORTOKEN as a tokenize failure in
+    BufferReader.tokenize_to, which on 3.11 leaves the statement holding
+    a·b open, so the read takes in g and lists c and KeyError. Caught on
+    3.11 only, since 3.12+ tokenizes these names as NAME.
+    Oracle: ast.parse of the buffer, where f ends on its return line.
+    """
+    source = (
+        'def f(a):\n    x = a·b\n    return x\n\n\n'
+        'def g(c):\n    raise KeyError\n')
     vim.load(source, 1, {'python_style': 'google'})
     Docstring().full_docstring()
     assert vim.current.buffer[:10] == [
@@ -287,3 +317,352 @@ def test_full_docstring_reads_only_past_the_object_end(vim):
     Docstring().full_docstring()
     assert vim.current.buffer[1] == '    """'
     assert CountingBuffer.reads < 50
+
+
+def test_method_first_argument_reads_up_only_to_the_start_line(vim):
+    """Verify the upward scan stops reading at the nearest column-0 class.
+
+    Mutation: reading and tokenizing every line above the cursor, which
+    makes the command's cost grow with the buffer above the def.
+    Oracle: class A is the line above h, so a few dozen reads cover it; the
+    buffer holds 10,000 lines above class A.
+    """
+    source = 'x = 1\n' * 10_000 + 'class A:\n    def h(this, b):\n        pass\n'
+    vim.load(source, 10_002, {'python_style': 'rest'})
+    vim.current.buffer = CountingBuffer(vim.current.buffer)
+    CountingBuffer.reads = 0
+    Docstring().full_docstring()
+    reads = CountingBuffer.reads
+    listed = [
+        line.split()[1].rstrip(':') for line in vim.current.buffer if ':param' in line
+        ]
+    assert listed == ['b']
+    assert reads < 50
+
+
+def test_full_docstring_stops_at_a_string_below_the_object(vim):
+    """Verify a column-0 triple quote below the def does not join the def.
+
+    Mutation: reading any line that opens with a triple quote as body, so
+    the unclosed string below f joins it and the command raises
+    InvalidSyntax.
+    Oracle: ast.parse of the buffer above the string ends f at 'return a';
+    hand-written Google docstring for f.
+    """
+    source = 'def f(a):\n    return a\n"""unclosed\n'
+    vim.load(source, 1, {'python_style': 'google'})
+    Docstring().full_docstring()
+    assert vim.current.buffer == [
+        'def f(a):',
+        '    """',
+        '',
+        '    Args:',
+        '        a:',
+        '',
+        '    Returns:',
+        '        ',
+        '',
+        '    """',
+        '    return a',
+        '"""unclosed',
+        '',
+        ]
+
+
+@pytest.mark.parametrize(
+    ('source', 'row', 'expected'),
+    [
+        (
+            ('class A:\n    def g(self):\n        s = """\nx\n"""\n'
+             '        return s\n\n    def h(this, b):\n        pass\n'),
+            8,
+            ['b'],
+            ),
+        (
+            'class A:\n    s = """\nx\n"""\n\n    def h(this, b):\n        pass\n',
+            6,
+            ['b'],
+            ),
+        (
+            'class A:\n    @deco("""\nx\n""")\n    def h(this, b):\n        pass\n',
+            5,
+            ['b'],
+            ),
+        (
+            ('def outer():\n    s = """\nclass Fake:\n    """\n\n'
+             '    def h(this, b):\n        pass\n'),
+            6,
+            ['this', 'b'],
+            ),
+        (
+            ('class A:\n    s = """\ndef fake():\n"""\n    t = \'"""x\'\n'
+             '    def h(this, b):\n        pass\n'),
+            6,
+            ['b'],
+            ),
+        (
+            ("class A:\n    x = 'abc\\\ndef f(): y = ' + \\\n    + w\n"
+             '    if True:\n        def h(this, b):\n            pass\n'),
+            6,
+            ['b'],
+            ),
+        ])
+def test_method_first_argument_ignores_lines_inside_a_string(
+    vim, source, row, expected):
+    """Verify string lines left of the def's indent do not decide binding.
+
+    Mutation: reading indentation only in the upward scan, so a closing
+    triple quote at column 0 ends it as a non-class (lists this) and
+    'class Fake:' inside a string ends it as a class (drops this); or, on
+    Python 3.11 only, reading past an ERRORTOKEN that opens a string, so
+    tokens from 'def fake():' pass and a closing quote ends the scan (the
+    last two list this).
+    Oracle: README Features, a method's first argument is left out unless
+    the method is a @staticmethod; h's enclosing block is class A in all
+    but the fourth, where it is def outer.
+    """
+    vim.load(source, row, {'python_style': 'rest'})
+    Docstring().full_docstring()
+    listed = [
+        line.split()[1].rstrip(':') for line in vim.current.buffer if ':param' in line
+        ]
+    assert listed == expected
+
+
+@pytest.mark.parametrize(
+    ('source', 'row', 'expected'),
+    [
+        (
+            ('x = """unterminated\n\nclass A:\n    def g(self):\n'
+             '        """Doc."""\n        return 1\n\n    def h(this, b):\n'
+             '        pass\n'),
+            8,
+            ['b'],
+            ),
+        (
+            ('class A:\n    s = """unterminated\n    @staticmethod\n'
+             '    @deco("""x""")\n    def h(a, b):\n        pass\n'),
+            5,
+            ['a', 'b'],
+            ),
+        (
+            ('class A:\n    s = """unterminated\n    def g(self):\n'
+             '        x = (1 if y\n  else 2)\n        def h(this, b):\n'
+             '            pass\n'),
+            6,
+            ['this', 'b'],
+            ),
+        ])
+def test_method_first_argument_ignores_marks_when_tokenize_fails(
+    vim, source, row, expected):
+    """Verify an unterminated string above the def leaves binding to indents.
+
+    Mutation: trusting the continuation marks gathered before tokenize
+    raises, so wrongly paired quotes hide class A (lists this) or
+    @staticmethod (drops a); or skipping compound headers on that path,
+    so 'else 2)' passes for one and class A decides (drops this).
+    Oracle: HEAD's indentation-only output; README Features, a method's
+    first argument is left out unless the method is a @staticmethod.
+    """
+    vim.load(source, row, {'python_style': 'rest'})
+    Docstring().full_docstring()
+    listed = [
+        line.split()[1].rstrip(':') for line in vim.current.buffer if ':param' in line
+        ]
+    assert listed == expected
+
+
+def test_method_first_argument_ignores_lines_inside_an_fstring_field(vim):
+    """Verify lines of a multi-line f-string replacement field are skipped.
+
+    Mutation: marking only STRING tokens, so on Python 3.12+ the field's
+    column-0 lines end the upward scan as a non-class (lists this).
+    Oracle: README Features, a method's first argument is left out unless
+    the method is a @staticmethod; tokenize docs, an f-string runs from
+    FSTRING_START to its FSTRING_END on 3.12+ and is one STRING on 3.11.
+    """
+    source = (
+        'class A:\n    def g(self):\n        s = f"""\n{\nself\n}\n"""\n'
+        '        return s\n\n    def h(this, b):\n        pass\n')
+    vim.load(source, 10, {'python_style': 'rest'})
+    Docstring().full_docstring()
+    listed = [
+        line.split()[1].rstrip(':') for line in vim.current.buffer if ':param' in line
+        ]
+    assert listed == ['b']
+
+
+def test_full_docstring_reads_past_an_fstring_field(vim):
+    """Verify a multi-line f-string replacement field does not end the def.
+
+    Mutation: dropping the open-statement check in
+    BufferReader.continues_line, so a line counts only once its statement's
+    NEWLINE is read, and on Python 3.12+ the field's column-0 line ends the
+    object early and the command raises InvalidSyntax.
+    Oracle: hand-written Google docstring for f; tokenize docs, an
+    f-string runs from FSTRING_START to its FSTRING_END on 3.12+.
+    """
+    source = 'def f(a):\n    s = f"""\n{\na\n}\n"""\n    return s\n'
+    vim.load(source, 1, {'python_style': 'google'})
+    Docstring().full_docstring()
+    assert vim.current.buffer[:10] == [
+        'def f(a):',
+        '    """',
+        '',
+        '    Args:',
+        '        a:',
+        '',
+        '    Returns:',
+        '        ',
+        '',
+        '    """',
+        ]
+
+
+@pytest.mark.parametrize(
+    ('source', 'row', 'body_indent'),
+    [
+        ('def f(a):\n    x = [\n1]\n    return x\n', 1, '    '),
+        ('def f(a):\n    x = 1 + \\\n(2 +\n3)\n    return x\n', 1, '    '),
+        ('def f(a):\n    if (a and\na):\n        return a\n', 1, '    '),
+        (
+            'def f(a):\n    @deco(\n1)\n    def h():\n        pass\n    return h\n',
+            1,
+            '    ',
+            ),
+        (
+            ('class A:\n    def g(self, a):\n        x = (1 if a\nelse 2)\n'
+             '        return x\n'),
+            2,
+            '        ',
+            ),
+        ])
+def test_full_docstring_reads_past_continuation_lines(vim, source, row, body_indent):
+    """Verify a column-0 line that continues a statement does not end the def.
+
+    Mutation: checking only indent, strings and a trailing backslash in the
+    downward scan, so '1]', '3)', 'a):', '1)' or 'else 2)' ends the object
+    early and the command raises InvalidSyntax.
+    Oracle: ast.parse of the whole buffer ends the def on its last line;
+    README Features, a body that holds a return gets a returns section.
+    """
+    vim.load(source, row, {'python_style': 'google'})
+    Docstring().full_docstring()
+    lines = source.split('\n')
+    assert vim.current.buffer == [
+        *lines[:row],
+        f'{body_indent}"""',
+        '',
+        f'{body_indent}Args:',
+        f'{body_indent}    a:',
+        '',
+        f'{body_indent}Returns:',
+        f'{body_indent}    ',
+        '',
+        f'{body_indent}"""',
+        *lines[row:],
+        ]
+
+
+def test_full_docstring_stops_below_a_comment_ending_in_backslash(vim):
+    """Verify a backslash inside a comment does not pull the next line in.
+
+    Mutation: treating any line after one that ends in a backslash as body,
+    so the column-0 raise lands in f's Raises section.
+    Oracle: ast.parse of the buffer, where a comment's backslash continues
+    nothing and the raise is a module-level statement.
+    """
+    source = 'def f(a):\n    return a  # note \\\nraise ValueError\n'
+    vim.load(source, 1, {'python_style': 'google'})
+    Docstring().full_docstring()
+    assert vim.current.buffer == [
+        'def f(a):',
+        '    """',
+        '',
+        '    Args:',
+        '        a:',
+        '',
+        '    Returns:',
+        '        ',
+        '',
+        '    """',
+        '    return a  # note \\',
+        'raise ValueError',
+        '',
+        ]
+
+
+@pytest.mark.parametrize(
+    ('source', 'row', 'expected'),
+    [
+        ('class A:\n    if X:\n        def h(this, b):\n            pass\n', 3, ['b']),
+        (
+            ('class A:\n    try:\n        pass\n    except E:\n'
+             '        def h(this, b):\n            pass\n'),
+            5,
+            ['b'],
+            ),
+        (
+            ('class A:\n    def g(self):\n        if X:\n'
+             '            def h(this, b):\n                pass\n'),
+            4,
+            ['this', 'b'],
+            ),
+        ])
+def test_method_first_argument_looks_past_compound_statements(
+    vim, source, row, expected):
+    """Verify an if or except header between the def and its scope is skipped.
+
+    Mutation: ending the upward scan at the first lower-indent line (lists
+    this under if X or except E), or skipping a def header as well (drops
+    this under def g).
+    Oracle: README Features, a method's first argument is left out unless
+    the method is a @staticmethod; Python makes a def in an if or except
+    block of a class body a method, and one inside a def a function.
+    """
+    vim.load(source, row, {'python_style': 'rest'})
+    Docstring().full_docstring()
+    listed = [
+        line.split()[1].rstrip(':') for line in vim.current.buffer if ':param' in line
+        ]
+    assert listed == expected
+
+
+@pytest.mark.parametrize(
+    ('source', 'row', 'expected'),
+    [
+        ('class A:\n    x = [\n1]\n\n    def h(this, b):\n        pass\n', 5, ['b']),
+        (
+            'class A:\n    if (X and\nY):\n        def h(this, b):\n            pass\n',
+            4,
+            ['b'],
+            ),
+        (
+            'class A:\n    x = 1 + \\\n2\n\n    def h(this, b):\n        pass\n',
+            5,
+            ['b'],
+            ),
+        ('class A:\n    @deco(\n1)\n    def h(this, b):\n        pass\n', 4, ['b']),
+        ('class A(\nBase):\n    def h(this, b):\n        pass\n', 3, ['b']),
+        (
+            'class A:\n    x = (1 if y\nelse 2)\n\n    def h(this, b):\n        pass\n',
+            5,
+            ['b'],
+            ),
+        ])
+def test_method_first_argument_ignores_continuation_lines(
+    vim, source, row, expected):
+    """Verify a line that continues a statement above does not decide binding.
+
+    Mutation: reading each line on its own in the upward scan, so a
+    bracket, backslash or decorator continuation at column 0 ends it as a
+    non-class (lists this), or 'else 2)' passes for a compound header.
+    Oracle: README Features, a method's first argument is left out unless
+    the method is a @staticmethod; the ast parent of h is class A in each.
+    """
+    vim.load(source, row, {'python_style': 'rest'})
+    Docstring().full_docstring()
+    listed = [
+        line.split()[1].rstrip(':') for line in vim.current.buffer if ':param' in line
+        ]
+    assert listed == expected

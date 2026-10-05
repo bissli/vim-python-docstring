@@ -2,11 +2,10 @@ let s:plugin_root_dir = fnamemodify(resolve(expand('<sfile>:p')), ':h')
 
 python3 << EOF
 import sys
-from os.path import normpath, join
+from os.path import join
 import vim
 plugin_root_dir = vim.eval('s:plugin_root_dir')
 scr = join(plugin_root_dir, '..', 'python')
-python_root_dir = normpath(join(plugin_root_dir, '..', 'python'))
 # install.sh puts only requirements.txt here. The venv's own
 # site-packages stays off sys.path so its pip and setuptools never
 # shadow Vim's.

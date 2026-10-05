@@ -9,9 +9,11 @@ import tokenize
 from collections.abc import Iterator
 
 import ibis
-from utils import *
-from vimenv import *
 from asthelper import ClassInstanceNameExtractor, ClassVisitor, MethodVisitor
+from utils import concat_
+from vimenv import Enviroment, VimEnviroment
+
+COMPOUND_HEADER = r'(async\s+)?(if|elif|else|try|except|finally|with|for|while|match|case)\b'
 
 
 class InvalidSyntax(Exception):
@@ -137,12 +139,22 @@ class Templater:
 
 
 class BufferReader:
-    """Buffer lines from the cursor down, read only as far as a caller asks.
+    """Buffer lines in source order, read only as far as a caller asks.
 
     Parameters
     ----------
     rows : Iterator[tuple[int, str]]
-        (row, line) pairs from `Enviroment.lines_following_cursor`.
+        (row, line) pairs in source order. An offset counts pairs from the
+        first one.
+
+    Attributes
+    ----------
+    tokenize_failed : bool
+        True once tokenizing has raised, or on 3.11 yielded an error token
+        for an unterminated string, e.g. at a dedent below the object, an
+        unterminated string or bytes that are not UTF-8. Tokenizing stops
+        there for good. Marks read before the error stay, and an
+        unterminated string raises only at the last line.
     """
 
     def __init__(self, rows: Iterator[tuple[int, str]]) -> None:
@@ -152,10 +164,12 @@ class BufferReader:
         self._tokens = tokenize.generate_tokens(self._next_token_line)
         self._token_row = 0
         self._tokens_done = False
-        self._string_offsets = set()
+        self.tokenize_failed = False
+        self._continued_offsets = set()
+        self._logical_row = 0
 
     def row(self, offset: int) -> tuple[int, str] | None:
-        """(row, line) at offset lines below the cursor, None past the end.
+        """(row, line) pair at offset, None past the end.
         """
         while len(self._read) <= offset:
             buffer_row = next(self._rows, None)
@@ -173,32 +187,59 @@ class BufferReader:
         self._token_offset += 1
         return buffer_row[1] + '\n'
 
-    def inside_string(self, offset: int) -> bool:
-        """True when the line at offset starts inside a multi-line token.
+    def tokenize_to(self, offset: int) -> None:
+        """Tokenize until a token starts on the line at offset or below it.
 
         Parameters
         ----------
         offset : int
-            Lines below the cursor, as for `row`.
-
-        Returns
-        -------
-        bool
-            True for a line after the first line of a triple-quoted string or
-            f-string part. Tokenizing reads only until a token starts past
-            offset, and stops for good at its first error, e.g. a dedent
-            below the object, an unterminated string or bytes that are not
-            UTF-8.
+            As for `row`. Past the last line, tokenizes to the end.
         """
         while not self._tokens_done and self._token_row <= offset:
             try:
                 token = next(self._tokens)
-            except (StopIteration, tokenize.TokenError, SyntaxError, UnicodeError):
+            except StopIteration:
                 self._tokens_done = True
                 break
+            except (tokenize.TokenError, SyntaxError, UnicodeError):
+                self._tokens_done = True
+                self.tokenize_failed = True
+                break
             self._token_row = token.start[0]
-            self._string_offsets.update(range(token.start[0], token.end[0]))
-        return offset in self._string_offsets
+            token_name = tokenize.tok_name[token.type]
+            # Python 3.11 yields an ERRORTOKEN opening with a quote for an
+            # unterminated single-quoted string, where 3.12+ raises. Its
+            # other ERRORTOKENs mark valid non-ASCII names.
+            if token_name == 'ERRORTOKEN' and re.match(r'[A-Za-z]*[\'"]', token.string):
+                self._tokens_done = True
+                self.tokenize_failed = True
+                break
+            if token_name == 'NEWLINE':
+                self._continued_offsets.update(
+                    range(self._logical_row, token.start[0]))
+                self._logical_row = 0
+            elif (not self._logical_row
+                  and token_name not in {'NL', 'COMMENT', 'INDENT', 'DEDENT'}):
+                self._logical_row = token.start[0]
+
+    def continues_line(self, offset: int) -> bool:
+        """True when the line at offset is not the first line of its statement.
+
+        Parameters
+        ----------
+        offset : int
+            As for `row`.
+
+        Returns
+        -------
+        bool
+            True for a line inside brackets, after a backslash or inside a
+            multi-line string or f-string. Tokenizes only as far as
+            `tokenize_to(offset)` does. A line past a tokenize error can
+            read either way. `tokenize_failed` reports the error.
+        """
+        self.tokenize_to(offset)
+        return offset in self._continued_offsets or 0 < self._logical_row <= offset
 
 
 class ObjectWithDocstring(abc.ABC):
@@ -210,15 +251,9 @@ class ObjectWithDocstring(abc.ABC):
         Editor state. Its cursor line starts the object.
     templater : Templater
         Renders the full docstring.
-
-    Attributes
-    ----------
-    starting_line : int
-        0-based row of the cursor when the object was built.
     """
 
     def __init__(self, env: Enviroment, templater: Templater) -> None:
-        self.starting_line = env.current_line_nr
         self.env = env
         self.templater = templater
 
@@ -293,8 +328,8 @@ class ObjectWithDocstring(abc.ABC):
         while (buffer_row := reader.row(offset)) is not None:
             last_row, line = buffer_row
             if (valid_sig
-                and not self._is_correct_indent(lines[-1], line, expected_indent)
-                and not reader.inside_string(offset)):
+                and not self._is_correct_indent(line, expected_indent)
+                and not reader.continues_line(offset)):
                 break
 
             lines.append(line)
@@ -321,17 +356,11 @@ class ObjectWithDocstring(abc.ABC):
 
         return sig_line, obj_indent, tree
 
-    def _is_correct_indent(
-        self,
-        previous_line: str,
-        line: str,
-        expected_indent: str) -> bool:
+    def _is_correct_indent(self, line: str, expected_indent: str) -> bool:
         """True when line still belongs to the object's body.
 
         Parameters
         ----------
-        previous_line : str
-            The line above line.
         line : str
             The line to test.
         expected_indent : str
@@ -340,17 +369,12 @@ class ObjectWithDocstring(abc.ABC):
         Returns
         -------
         bool
-            True for a line indented at least expected_indent, a comment, a
-            line that opens with a triple quote, a blank line, or a line
-            after one that ends in a backslash.
+            True for a line indented at least expected_indent, a comment or
+            a blank line.
         """
         if re.match(r'^' + expected_indent, line):
             return True
         elif re.match(r'^\s*#', line):
-            return True
-        elif re.match(r"^\s*[\"']{3}", line):
-            return True
-        elif re.match(r'.*\\$', previous_line):
             return True
         elif re.match(r'^\s*$', line):
             return True
@@ -414,15 +438,43 @@ class MethodController(ObjectWithDocstring):
         Returns
         -------
         bool
-            Can be wrong below a multi-line string with a line left of the
-            def's indent. The scan reads indentation only, and that line
-            ends it.
+            True when the nearest class, def or async def line above at a
+            lower indent is a class, past any compound statement header
+            such as if or try. A line that continues a statement, in
+            brackets, after a backslash or inside a string, is skipped. When
+            the lines above do not tokenize, indentation alone decides and
+            no header is skipped. Can be wrong below a column-0 class or def
+            line inside a multi-line string, when the lines from it down
+            still tokenize.
         """
         def_indent = len(self.env.current_line) - len(self.env.current_line.lstrip())
+        if not def_indent:
+            return False
+        preceding = self.env.lines_preceding_cursor()
+        lines_above = []
+        for line in preceding:
+            lines_above.append(line)
+            if re.match(r'(class|def|async\s+def)\s', line):
+                break
+        lines_above.reverse()
+        reader = BufferReader(enumerate(lines_above))
+        # Tokenize to the end first: the marks read before an error can
+        # pair the wrong quotes.
+        reader.tokenize_to(len(lines_above))
+        # A start line inside a string almost always leaves an odd triple
+        # quote or an unmatched bracket below it, so the tokenize fails.
+        if reader.tokenize_failed and (lines_further_up := list(preceding)):
+            lines_above = lines_further_up[::-1] + lines_above
+            reader = BufferReader(enumerate(lines_above))
+            reader.tokenize_to(len(lines_above))
         in_decorators = True
-        for line in self.env.lines_preceding_cursor():
+        block_indent = def_indent
+        for offset in reversed(range(len(lines_above))):
+            line = lines_above[offset]
             stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
+            if (not stripped
+                or stripped.startswith('#')
+                or (not reader.tokenize_failed and reader.continues_line(offset))):
                 continue
             indent = len(line) - len(line.lstrip())
             if in_decorators and indent > def_indent:
@@ -432,7 +484,10 @@ class MethodController(ObjectWithDocstring):
                     return False
                 continue
             in_decorators = False
-            if indent < def_indent:
+            if indent < block_indent:
+                if not reader.tokenize_failed and re.match(COMPOUND_HEADER, stripped):
+                    block_indent = indent
+                    continue
                 return stripped.startswith('class ')
         return False
 
@@ -599,7 +654,7 @@ class Docstring:
                 if second_word == 'def':
                     return MethodController(env, templater)
 
-        raise DocstringUnavailable('Docstring ERROR: Doctring cannot be created for selected object')
+        raise DocstringUnavailable('Docstring ERROR: Docstring cannot be created for selected object')
 
     def full_docstring(self, print_hints: bool = False) -> None:
         """Write the object's full docstring below its signature.
