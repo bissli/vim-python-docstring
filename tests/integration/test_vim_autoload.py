@@ -25,8 +25,17 @@ def run_vim(plugin_dir: Path, target: Path, *commands: str) -> None:
     for command in ['runtime plugin/vim-python-docstring.vim', '1', *commands, 'wq']:
         ex_args += ['-c', command]
     subprocess.run(
-        ['vim', '-u', 'NONE', '-N', '-es', '--cmd', f'set rtp^={plugin_dir}',
-         *ex_args, str(target)],
+        [
+            'vim',
+            '-u',
+            'NONE',
+            '-N',
+            '-es',
+            '--cmd',
+            f'set rtp^={plugin_dir}',
+            *ex_args,
+            str(target),
+            ],
         check=False,
         timeout=30)
 
@@ -57,7 +66,7 @@ def test_docstring_command_loads_deps_from_venv(tmp_path):
 
 
 def test_missing_deps_error_names_install_script(tmp_path):
-    """Verify a plugin copy with no .venv reports the missing module and install.sh.
+    """Verify a copy with no .venv reports the missing module and install.sh.
 
     Mutation: the autoload import loses its ModuleNotFoundError rewrite,
     so the user sees only "No module named 'ibis'".

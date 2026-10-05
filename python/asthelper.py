@@ -1,15 +1,32 @@
+"""AST visitors that collect what a generated docstring lists.
+"""
 import ast
 import builtins
 from itertools import chain
 
 
 class AttributeCollector(ast.NodeVisitor):
-    def __init__(self, instance_name):
+    """Attributes set on one name in an assignment target.
+
+    Parameters
+    ----------
+    instance_name : str
+        The name whose attributes count, e.g. self.
+
+    Attributes
+    ----------
+    data : dict[str, None]
+        Attribute names in visit order. For self.a.b only a counts.
+    """
+
+    def __init__(self, instance_name: str) -> None:
         self.instance_name = instance_name
         self.data = {}
         super().__init__()
 
-    def visit_Attribute(self, node):
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        """Add node.attr to data when node is <instance_name>.attr.
+        """
         if isinstance(node.value, ast.Name):
             if node.value.id == self.instance_name:
                 self.data[node.attr] = None
@@ -18,36 +35,69 @@ class AttributeCollector(ast.NodeVisitor):
 
 
 class ClassInstanceNameExtractor(ast.NodeVisitor):
-    def __init__(self):
-        self.instance_name = 'self'  # default
+    """The name a class's methods give the instance.
+
+    Attributes
+    ----------
+    instance_name : str
+        The first argument of __init__, else of the last method, else
+        'self'.
+    set : bool
+        True once __init__ has set instance_name.
+    """
+
+    def __init__(self) -> None:
+        self.instance_name = 'self'
         self.set = False
         super().__init__()
 
-    def visit_FunctionDef(self, node):
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """Take node's first argument as instance_name unless __init__ set it.
+        """
         if node.name == '__init__':
             self.instance_name = node.args.args[0].arg
             self.set = True
         elif not self.set:
             self.instance_name = node.args.args[0].arg
 
-    def generic_visit(self, node):
+    def generic_visit(self, node: ast.AST) -> None:
+        """Visit node's children until __init__ sets instance_name.
+        """
         if not self.set:
             super().generic_visit(node)
 
 
 class ClassVisitor(ast.NodeVisitor):
-    def __init__(self, instance_name):
+    """Instance attributes a class assigns anywhere in its body.
+
+    Parameters
+    ----------
+    instance_name : str
+        The instance's name, from `ClassInstanceNameExtractor`.
+
+    Attributes
+    ----------
+    attributes : dict[str, None]
+        Attribute names of instance_name that an assignment or annotated
+        assignment target sets, in source order.
+    """
+
+    def __init__(self, instance_name: str) -> None:
         super().__init__()
         self.attributes = {}
         self.instance_name = instance_name
 
-    def visit_Assign(self, node):
+    def visit_Assign(self, node: ast.Assign) -> None:
+        """Add the instance attributes that node's targets set.
+        """
         ac = AttributeCollector(self.instance_name)
         for target in node.targets:
             ac.visit(target)
         self.attributes |= ac.data
 
-    def visit_AnnAssign(self, node):
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        """Add the instance attribute that node's target sets.
+        """
         ac = AttributeCollector(self.instance_name)
         ac.visit(node.target)
         self.attributes |= ac.data
@@ -76,8 +126,9 @@ class MethodVisitor(ast.NodeVisitor):
         Raised exception names as written, e.g. 'errors.Foo', in source order.
         A name whose last part, past leading underscores, starts lower case
         (err, self.error) counts as a variable, and an all-caps one longer
-        than a letter (ERRORS) as a constant; both are left out. A raise that a handler of its `try`
-        catches is left out unless the handler re-raises it.
+        than a letter (ERRORS) as a constant; both are left out. A raise
+        that a handler of its `try` catches is left out unless the handler
+        re-raises it.
     returns : bool
         True if the function has a return statement.
     yields : bool
@@ -95,7 +146,15 @@ class MethodVisitor(ast.NodeVisitor):
         self._caught_by_handler = {}
         super().__init__()
 
-    def _handle_functions(self, node):
+    def _handle_functions(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        """Merge node's raises into this visitor's.
+
+        Parameters
+        ----------
+        node : ast.FunctionDef or ast.AsyncFunctionDef
+            A def met while visiting. A parent visitor also takes its
+            arguments, returns and yields.
+        """
         new_visitor = MethodVisitor(parent=False)
         new_visitor.generic_visit(node)
         self.raises |= new_visitor.raises
@@ -188,6 +247,8 @@ class MethodVisitor(ast.NodeVisitor):
         return False
 
     def visit_Raise(self, node: ast.Raise) -> None:
+        """Add the classes node raises, or what a handler re-raises.
+        """
         if node.exc is None:
             handler = self._handlers[-1] if self._handlers else None
         elif isinstance(node.exc, ast.Name):
@@ -205,6 +266,8 @@ class MethodVisitor(ast.NodeVisitor):
         super().generic_visit(node)
 
     def visit_Try(self, node: ast.Try | ast.TryStar) -> None:
+        """Drop body raises a handler catches, keeping them for its re-raise.
+        """
         enclosing_raises, self.raises = self.raises, {}
         for statement in node.body:
             self.visit(statement)
@@ -221,20 +284,30 @@ class MethodVisitor(ast.NodeVisitor):
     visit_TryStar = visit_Try
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        """Visit node's body with node as the innermost open handler.
+        """
         self._handlers.append(node)
         super().generic_visit(node)
         self._handlers.pop()
 
-    def visit_Yield(self, node):
+    def visit_Yield(self, node: ast.Yield) -> None:
+        """Mark the function as a generator.
+        """
         self.yields = True
         super().generic_visit(node)
 
-    def visit_Return(self, node):
+    def visit_Return(self, node: ast.Return) -> None:
+        """Mark the function as returning, bare `return` included.
+        """
         self.returns = True
         super().generic_visit(node)
 
-    def visit_FunctionDef(self, node):
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """Merge in a def as `_handle_functions` says.
+        """
         self._handle_functions(node)
 
-    def visit_AsyncFunctionDef(self, node):
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        """Merge in an async def as `_handle_functions` says.
+        """
         self._handle_functions(node)

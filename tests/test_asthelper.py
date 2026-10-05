@@ -46,12 +46,16 @@ def test_raises_keep_source_order():
         '    raise TypeError(a)\n'
         '    raise IndexError(a)\n')
     assert raises_of(source) == [
-        'TypeError', 'KeyError', 'ValueError', 'OSError', 'IndexError',
+        'TypeError',
+        'KeyError',
+        'ValueError',
+        'OSError',
+        'IndexError',
         ]
 
 
 def test_variables_and_unnamed_raises_are_skipped():
-    """Verify lower-case names, call results, subscripts and causes add nothing.
+    """Verify lower-case names, call results, subscripts and causes add none.
 
     Mutation: listing every bare or dotted name (adds exc, self.error),
     unparsing any callee (adds err.with_traceback, make_error()), or
@@ -84,17 +88,19 @@ def test_with_traceback_and_branches_give_the_class():
     assert raises_of(source) == ['ValueError', 'TypeError', 'KeyError', 'IndexError']
 
 
-@pytest.mark.parametrize(('handler', 'raised', 'expected'), [
-    ('except KeyError:', 'raise KeyError("k")', []),
-    ('except LookupError:', 'raise KeyError', []),
-    ('except (OSError, KeyError):', 'raise KeyError', []),
-    ('except:', 'raise ValueError', []),
-    ('except Exception:', 'raise errors.Foo()', []),
-    ('except BaseException:', 'raise KeyboardInterrupt', []),
-    ('except Exception:', 'raise KeyboardInterrupt', ['KeyboardInterrupt']),
-    ('except ValueError:', 'raise KeyError()', ['KeyError']),
-    ('except ValueError:', 'raise errors.Foo()', ['errors.Foo']),
-    ])
+@pytest.mark.parametrize(
+    ('handler', 'raised', 'expected'),
+    [
+        ('except KeyError:', 'raise KeyError("k")', []),
+        ('except LookupError:', 'raise KeyError', []),
+        ('except (OSError, KeyError):', 'raise KeyError', []),
+        ('except:', 'raise ValueError', []),
+        ('except Exception:', 'raise errors.Foo()', []),
+        ('except BaseException:', 'raise KeyboardInterrupt', []),
+        ('except Exception:', 'raise KeyboardInterrupt', ['KeyboardInterrupt']),
+        ('except ValueError:', 'raise KeyError()', ['KeyError']),
+        ('except ValueError:', 'raise errors.Foo()', ['errors.Foo']),
+        ])
 def test_raise_caught_by_its_handler_is_dropped(handler, raised, expected):
     """Verify a raise in a try body is listed only when no handler catches it.
 
@@ -150,23 +156,25 @@ def test_raises_outside_the_try_body_are_kept():
     assert raises_of(source) == ['TypeError', 'ValueError', 'OSError']
 
 
-@pytest.mark.parametrize(('body', 'handler', 'expected'), [
-    (
-        'raise BadZipFile("x")',
-        'except:\n        close()\n        raise',
-        ['BadZipFile'],
-        ),
-    (
-        'raise ValueError',
-        'except Exception:\n        log()\n        raise',
-        ['ValueError'],
-        ),
-    (
-        'raise KeyError',
-        'except BaseException as e:\n        raise e',
-        ['KeyError'],
-        ),
-    ])
+@pytest.mark.parametrize(
+    ('body', 'handler', 'expected'),
+    [
+        (
+            'raise BadZipFile("x")',
+            'except:\n        close()\n        raise',
+            ['BadZipFile'],
+            ),
+        (
+            'raise ValueError',
+            'except Exception:\n        log()\n        raise',
+            ['ValueError'],
+            ),
+        (
+            'raise KeyError',
+            'except BaseException as e:\n        raise e',
+            ['KeyError'],
+            ),
+        ])
 def test_handler_reraise_keeps_the_caught_body_class(body, handler, expected):
     """Verify a re-raising handler lists the body raise it caught.
 
@@ -217,13 +225,15 @@ def test_nested_handler_reraises_the_outer_handler_name():
     assert raises_of(source) == ['KeyError']
 
 
-@pytest.mark.parametrize(('signature', 'bound', 'expected'), [
-    ('def f(self, /, a, *, key=None):', True, ['a', 'key']),
-    ('def f(*args, key=None):', True, ['key']),
-    ('def f(a, b, /, c):', False, ['a', 'b', 'c']),
-    ])
+@pytest.mark.parametrize(
+    ('signature', 'bound', 'expected'),
+    [
+        ('def f(self, /, a, *, key=None):', True, ['a', 'key']),
+        ('def f(*args, key=None):', True, ['key']),
+        ('def f(a, b, /, c):', False, ['a', 'b', 'c']),
+        ])
 def test_first_positional_argument_is_the_one_dropped(signature, bound, expected):
-    """Verify only the first positional argument is dropped, and only if present.
+    """Verify only the first positional argument is dropped, if there is one.
 
     Mutation: popping the first entry of the merged list (drops key when
     there is no positional argument), or leaving out posonlyargs (drops

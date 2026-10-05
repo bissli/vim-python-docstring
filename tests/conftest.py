@@ -72,4 +72,6 @@ sys.modules['vim'] = fake_vim
 
 @pytest.fixture
 def vim() -> FakeVim:
+    """The FakeVim stub the plugin's `import vim` resolves to.
+    """
     return fake_vim

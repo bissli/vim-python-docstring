@@ -65,7 +65,6 @@ NOT_AN_OBJECT = """\
 x = 1
 """
 
-# Each case: id, source, 1-based cursor row, command, g: variables.
 CASES = [
     ('method', METHOD, 1, 'full', {}),
     ('method-hints', METHOD, 1, 'full_hints', {}),
@@ -79,18 +78,37 @@ CASES = [
     ]
 STYLED_CASES = [
     pytest.param(
-        source, row, command, {**globals_, 'python_style': style},
-        f'{case_id}-{style}.txt', id=f'{case_id}-{style}')
+        source,
+        row,
+        command,
+        {**globals_, 'python_style': style},
+        f'{case_id}-{style}.txt',
+        id=f'{case_id}-{style}')
     for case_id, source, row, command, globals_ in CASES
     for style in STYLES
     ]
 UNSTYLED_CASES = [
     pytest.param(
-        METHOD, 1, 'full_hints', {}, 'default-style.txt', id='default-style'),
+        METHOD,
+        1,
+        'full_hints',
+        {},
+        'default-style.txt',
+        id='default-style'),
     pytest.param(
-        NOT_AN_OBJECT, 1, 'full', {}, 'not-an-object.txt', id='not-an-object'),
+        NOT_AN_OBJECT,
+        1,
+        'full',
+        {},
+        'not-an-object.txt',
+        id='not-an-object'),
     pytest.param(
-        METHOD, 2, 'full', {}, 'cursor-on-inner-def.txt', id='cursor-on-inner-def'),
+        METHOD,
+        2,
+        'full',
+        {},
+        'cursor-on-inner-def.txt',
+        id='cursor-on-inner-def'),
     ]
 
 
@@ -137,7 +155,12 @@ def run_command(
     ('source', 'row', 'command', 'globals_', 'expected_name'),
     STYLED_CASES + UNSTYLED_CASES)
 def test_output_matches_baseline(
-    vim, source, row, command, globals_, expected_name):
+    vim,
+    source,
+    row,
+    command,
+    globals_,
+    expected_name):
     """Verify each command's buffer or error equals the saved baseline output.
 
     Mutation: any change to the templates, the AST visitors, indentation,

@@ -19,12 +19,16 @@ except ModuleNotFoundError as exc:
         f'vim-python-docstring: {exc.name} is missing, run install.sh in the plugin directory') from exc
 EOF
 
+" Echo a:exception as an error, without the
+" 'Vim(python3):<ExceptionClass>:' prefix Vim puts before it.
 function! s:handle_error(exception)
     echohl ErrorMsg
     echo join(map(split(a:exception, ":")[2:], 'trim(v:val)'), " : ")
     echohl None
 endfunction
 
+" Write the full docstring for the object on the cursor line, echoing
+" any error.
 function! vimpythondocstring#Full()
     try
         python3 pydocstring.Docstring().full_docstring()
@@ -33,6 +37,7 @@ function! vimpythondocstring#Full()
     endtry
 endfunction
 
+" As vimpythondocstring#Full(), with argument annotations listed.
 function! vimpythondocstring#FullTypes()
     try
         python3 pydocstring.Docstring().full_docstring(print_hints=True)
@@ -41,6 +46,8 @@ function! vimpythondocstring#FullTypes()
     endtry
 endfunction
 
+" Write an empty one-line docstring below the signature, echoing any
+" error.
 function! vimpythondocstring#Oneline()
     try
         python3 pydocstring.Docstring().oneline_docstring()

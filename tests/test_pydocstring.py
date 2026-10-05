@@ -15,7 +15,11 @@ def test_oneline_goes_below_multiline_signature(vim):
     vim.load('def f(a,\n      b):\n    return a\n', 1)
     Docstring().oneline_docstring()
     assert vim.current.buffer == [
-        'def f(a,', '      b):', '    """  """', '    return a', '',
+        'def f(a,',
+        '      b):',
+        '    """  """',
+        '    return a',
+        '',
         ]
 
 
@@ -43,14 +47,25 @@ def test_full_docstring_goes_below_backslash_continued_signature(vim):
     vim.load('def f(a, \\\n      b):\n    return a\n', 1, {'python_style': 'google'})
     Docstring().full_docstring()
     assert vim.current.buffer == [
-        'def f(a, \\', '      b):', '    """', '', '    Args:', '        a:',
-        '        b:', '', '    Returns:', '        ', '', '    """',
-        '    return a', '',
+        'def f(a, \\',
+        '      b):',
+        '    """',
+        '',
+        '    Args:',
+        '        a:',
+        '        b:',
+        '',
+        '    Returns:',
+        '        ',
+        '',
+        '    """',
+        '    return a',
+        '',
         ]
 
 
 def test_oneline_goes_below_backslash_continued_signature(vim):
-    """Verify :DocstringLine inserts after a signature continued with a backslash.
+    """Verify :DocstringLine inserts after a backslash-continued signature.
 
     Mutation: joining signature lines with '' in _get_sig, so the backslash
     no longer ends a line and the scan runs to the buffer's end.
@@ -59,7 +74,11 @@ def test_oneline_goes_below_backslash_continued_signature(vim):
     vim.load('def f(a, \\\n      b):\n    return a\n', 1)
     Docstring().oneline_docstring()
     assert vim.current.buffer == [
-        'def f(a, \\', '      b):', '    """  """', '    return a', '',
+        'def f(a, \\',
+        '      b):',
+        '    """  """',
+        '    return a',
+        '',
         ]
 
 
@@ -88,7 +107,11 @@ def test_raises_section_follows_source_order(vim):
     matches by chance once in 720 runs.
     """
     names = [
-        'TypeError', 'KeyError', 'OSError', 'IndexError', 'EOFError',
+        'TypeError',
+        'KeyError',
+        'OSError',
+        'IndexError',
+        'EOFError',
         'ArithmeticError',
         ]
     body = ''.join(f'    raise {name}(a)\n' for name in names)
@@ -109,8 +132,18 @@ def test_full_docstring_reads_past_unaligned_string_lines(vim):
     vim.load(source, 1, {'python_style': 'google', 'vpd_indent': '  '})
     Docstring().full_docstring()
     assert vim.current.buffer == [
-        'def foo():', '  """', '', '  Returns:', '    ', '', '  """',
-        '  x = """', 'Comment', '"""', '  return x', '',
+        'def foo():',
+        '  """',
+        '',
+        '  Returns:',
+        '    ',
+        '',
+        '  """',
+        '  x = """',
+        'Comment',
+        '"""',
+        '  return x',
+        '',
         ]
 
 
@@ -133,33 +166,64 @@ def test_full_docstring_ignores_a_triple_quote_inside_a_string(vim):
     vim.load(source, 1, {'python_style': 'google'})
     Docstring().full_docstring()
     assert vim.current.buffer[:10] == [
-        'def f(a):', '    """', '', '    Args:', '        a:', '', '    Returns:',
-        '        ', '', '    """',
+        'def f(a):',
+        '    """',
+        '',
+        '    Args:',
+        '        a:',
+        '',
+        '    Returns:',
+        '        ',
+        '',
+        '    """',
         ]
     assert vim.current.buffer[10:] == source.split('\n')[1:]
 
 
-@pytest.mark.parametrize(('source', 'row', 'expected'), [
-    ('class Shape:\n    def area(this, x):\n        return x\n', 2, ['x']),
-    ('class Maker:\n    @staticmethod\n    def make(a):\n        return a\n', 3, ['a']),
-    ('class Maker:\n    @classmethod\n    def make(klass, a):\n        return a\n',
-     3, ['a']),
-    (('class Shape:\n    def area(self):\n        def helper(item):\n'
-     '            return item\n        return helper\n'), 3, ['item']),
-    ('def f(this, a):\n    return a\n', 1, ['this', 'a']),
-    (('class A:\n    @staticmethod\n    def g(a):\n        pass\n\n'
-     '    def h(this, b):\n        pass\n'), 6, ['b']),
-    (('class A:\n    @staticmethod\n    @deco(\n        1)\n'
-      '    def f(a):\n        pass\n'), 5, ['a']),
-    ('class A:\n    @ staticmethod\n    def f(a):\n        pass\n', 3, ['a']),
-    ])
+@pytest.mark.parametrize(
+    ('source', 'row', 'expected'),
+    [
+        ('class Shape:\n    def area(this, x):\n        return x\n', 2, ['x']),
+        (
+            'class Maker:\n    @staticmethod\n    def make(a):\n        return a\n',
+            3,
+            ['a'],
+            ),
+        (
+            'class Maker:\n    @classmethod\n    def make(klass, a):\n'
+            '        return a\n',
+            3,
+            ['a'],
+            ),
+        (
+            'class Shape:\n    def area(self):\n        def helper(item):\n'
+            '            return item\n        return helper\n',
+            3,
+            ['item'],
+            ),
+        ('def f(this, a):\n    return a\n', 1, ['this', 'a']),
+        (
+            'class A:\n    @staticmethod\n    def g(a):\n        pass\n\n'
+            '    def h(this, b):\n        pass\n',
+            6,
+            ['b'],
+            ),
+        (
+            'class A:\n    @staticmethod\n    @deco(\n        1)\n'
+            '    def f(a):\n        pass\n',
+            5,
+            ['a'],
+            ),
+        ('class A:\n    @ staticmethod\n    def f(a):\n        pass\n', 3, ['a']),
+        ])
 def test_method_first_argument_is_dropped_by_context(vim, source, row, expected):
-    """Verify a method's first argument is dropped whatever its name, and only there.
+    """Verify only a method's first argument is dropped, whatever its name.
 
-    Mutation: the old name-only rule (lists this), ignoring @staticmethod
-    (drops a), treating an enclosing def as a class (drops item), letting
-    an earlier sibling's decorator count (keeps this for h), or ending the
-    decorator scan at a continuation line or on '@ staticmethod' (drops a).
+    Mutation: a name-only rule that drops self or cls (lists this),
+    ignoring @staticmethod (drops a), treating an enclosing def as a class
+    (drops item), letting an earlier sibling's decorator count (keeps this
+    for h), or ending the decorator scan at a continuation line or on
+    '@ staticmethod' (drops a).
     Oracle: Python binds the first argument of a non-static method in a
     class body, and of nothing else.
     """
@@ -182,8 +246,16 @@ def test_full_docstring_tolerates_bytes_that_are_not_utf8_below(vim):
     vim.load(source, 1, {'python_style': 'google'})
     Docstring().full_docstring()
     assert vim.current.buffer[:10] == [
-        'def f(a):', '    """', '', '    Args:', '        a:', '', '    Returns:',
-        '        ', '', '    """',
+        'def f(a):',
+        '    """',
+        '',
+        '    Args:',
+        '        a:',
+        '',
+        '    Returns:',
+        '        ',
+        '',
+        '    """',
         ]
 
 
@@ -193,7 +265,9 @@ class CountingBuffer(FakeBuffer):
 
     reads = 0
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int | slice) -> str | list[str]:
+        """Count the read, then index as a list does.
+        """
         CountingBuffer.reads += 1
         return super().__getitem__(index)
 

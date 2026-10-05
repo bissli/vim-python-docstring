@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Write a docstring for the def or class on Vim's cursor line.
+"""
 import abc
 import ast
 import os
@@ -13,30 +15,42 @@ from asthelper import ClassInstanceNameExtractor, ClassVisitor, MethodVisitor
 
 
 class InvalidSyntax(Exception):
-    """Raise when the syntax of processed object is invalid."""
+    """Raise when the syntax of processed object is invalid.
+    """
 
 
 class DocstringUnavailable(Exception):
-    """Raise when trying to process object to which there is no docstring."""
+    """Raise when trying to process object to which there is no docstring.
+    """
 
 
 class Templater:
-    """Class used to template the docstrings
+    """Renders a style's method or class template into an indented docstring.
+
+    Parameters
+    ----------
+    location : str
+        The plugin's autoload directory. Templates are read from
+        location/../styles.
+    indent : str
+        One indent level, e.g. 4 spaces or a tab.
+    style : str, default 'google'
+        Template name prefix, e.g. google, numpy, rest or epytext.
 
     Attributes
-        indent: used indentation
-        location: path to styles folder
-        style: docstring style
-        template: resulting remplate
-
+    ----------
+    template : ibis.Template
+        The template the last get_*_docstring call rendered.
     """
 
-    def __init__(self, location, indent, style='google'):
+    def __init__(self, location: str, indent: str, style: str = 'google') -> None:
         self.style = style
         self.indent = indent
         self.location = location
 
-    def _docstring_helper(self, obj_indent, docstring):
+    def _docstring_helper(self, obj_indent: str, docstring: str) -> str:
+        """docstring, each non-empty line prefixed by obj_indent and indent.
+        """
         lines = []
         for line in docstring.split('\n'):
             if re.match('.', line):
@@ -46,13 +60,44 @@ class Templater:
         return '\n'.join(lines)
 
     def get_method_docstring(
-        self, method_indent, args, returns, yields, raises, print_hints=False
-    ):
+        self,
+        method_indent: str,
+        args: list[dict],
+        returns: bool,
+        yields: bool,
+        raises: list[str],
+        print_hints: bool = False) -> str:
+        """Method docstring rendered from the style's method template.
+
+        Parameters
+        ----------
+        method_indent : str
+            Leading whitespace of the def line.
+        args : list[dict]
+            {'arg': name, 'type': annotation source or None} per argument,
+            as `MethodVisitor.arguments` holds them.
+        returns : bool
+            True to render the returns section.
+        yields : bool
+            True to render the yields section.
+        raises : list[str]
+            Exception names for the raises section, in order.
+        print_hints : bool, default False
+            True to render each argument's annotation.
+
+        Returns
+        -------
+        str
+            Newline-joined lines, each non-empty one indented one level past
+            method_indent.
+
+        Raises
+        ------
+        FileNotFoundError
+            styles/ has no <style>-method.txt.
+        """
         with open(
-            os.path.join(
-                self.location, '..', 'styles/{}-{}.txt'.format(self.style, 'method')
-            ),
-        ) as f:
+            os.path.join(self.location, '..', f'styles/{self.style}-method.txt')) as f:
             self.template = ibis.Template(f.read())
         docstring = self.template.render(
             indent=self.indent,
@@ -60,16 +105,32 @@ class Templater:
             hints=print_hints,
             raises=raises,
             returns=returns,
-            yields=yields,
-        )
+            yields=yields)
         return self._docstring_helper(method_indent, docstring)
 
-    def get_class_docstring(self, class_indent, attr):
+    def get_class_docstring(self, class_indent: str, attr: list[str]) -> str:
+        """Class docstring rendered from the style's class template.
+
+        Parameters
+        ----------
+        class_indent : str
+            Leading whitespace of the class line.
+        attr : list[str]
+            Instance attribute names, in order.
+
+        Returns
+        -------
+        str
+            Newline-joined lines, each non-empty one indented one level past
+            class_indent.
+
+        Raises
+        ------
+        FileNotFoundError
+            styles/ has no <style>-class.txt.
+        """
         with open(
-            os.path.join(
-                self.location, '..', 'styles/{}-{}.txt'.format(self.style, 'class')
-            ),
-        ) as f:
+            os.path.join(self.location, '..', f'styles/{self.style}-class.txt')) as f:
             self.template = ibis.Template(f.read())
         docstring = self.template.render(indent=self.indent, attr=attr)
         return self._docstring_helper(class_indent, docstring)
@@ -141,28 +202,52 @@ class BufferReader:
 
 
 class ObjectWithDocstring(abc.ABC):
-    """Represents an object (class, method) with the enviroment in which it is opened
+    """The def or class on the cursor line, and the editor it is in.
+
+    Parameters
+    ----------
+    env : Enviroment
+        Editor state. Its cursor line starts the object.
+    templater : Templater
+        Renders the full docstring.
 
     Attributes
-        env: enviroment class
-        starting_line: beggining line of the object on which it works
-        templater: templater object
-
+    ----------
+    starting_line : int
+        0-based row of the cursor when the object was built.
     """
 
-    def __init__(self, env, templater):
+    def __init__(self, env: Enviroment, templater: Templater) -> None:
         self.starting_line = env.current_line_nr
         self.env = env
         self.templater = templater
 
     @abc.abstractmethod
-    def write_docstring(self, *args, **kwargs):
-        """Method to create a docstring for appropriate object
+    def write_docstring(self, *args: bool, **kwargs: bool) -> None:
+        """Write the full docstring into `self.env` below the signature.
 
-        Writes the docstring to correct lines in `self.env` object.
+        Parameters
+        ----------
+        *args, **kwargs : bool
+            Options a subclass reads, e.g. print_hints.
         """
 
-    def _get_sig(self):
+    def _get_sig(self) -> tuple[int, str]:
+        """Where the signature on the cursor line ends, and its indent.
+
+        Returns
+        -------
+        tuple[int, str]
+            0-based row of the line that ends the signature, and the leading
+            whitespace of the cursor line.
+
+        Raises
+        ------
+        InvalidSyntax
+            The buffer ends before the signature parses.
+        DocstringUnavailable
+            The object's body is on its signature line.
+        """
         lines = []
         lines_it = self.env.lines_following_cursor()
         sig_line, first_line = next(lines_it)
@@ -178,8 +263,23 @@ class ObjectWithDocstring(abc.ABC):
             lines.append(line)
         return sig_line, indent
 
-    def _object_tree(self):
-        """Get the source code of the object under cursor."""
+    def _object_tree(self) -> tuple[int, str, ast.Module]:
+        """Parse the def or class on the cursor line, read down to its end.
+
+        Returns
+        -------
+        tuple[int, str, ast.Module]
+            0-based row of the line that ends the signature, the leading
+            whitespace of the cursor line, and the object's source parsed
+            with that whitespace removed.
+
+        Raises
+        ------
+        InvalidSyntax
+            The object's source does not parse.
+        DocstringUnavailable
+            The object's body is on its signature line.
+        """
         reader = BufferReader(self.env.lines_following_cursor())
         sig_line, first_line = reader.row(0)
         lines = [first_line]
@@ -204,7 +304,6 @@ class ObjectWithDocstring(abc.ABC):
                 sig_line = last_row
             offset += 1
 
-        # remove obj_indent from the beginning of all lines
         lines = [re.sub('^' + obj_indent, '', l) for l in lines]
         for i, l in enumerate(reversed(lines)):
             if l.strip() == '':
@@ -222,9 +321,28 @@ class ObjectWithDocstring(abc.ABC):
 
         return sig_line, obj_indent, tree
 
-    def _is_correct_indent(self, previous_line, line, expected_indent):
-        """Check whether given line has either given indentation (or more)
-        or does contain only nothing or whitespaces.
+    def _is_correct_indent(
+        self,
+        previous_line: str,
+        line: str,
+        expected_indent: str) -> bool:
+        """True when line still belongs to the object's body.
+
+        Parameters
+        ----------
+        previous_line : str
+            The line above line.
+        line : str
+            The line to test.
+        expected_indent : str
+            The body's indent.
+
+        Returns
+        -------
+        bool
+            True for a line indented at least expected_indent, a comment, a
+            line that opens with a triple quote, a blank line, or a line
+            after one that ends in a backslash.
         """
         if re.match(r'^' + expected_indent, line):
             return True
@@ -239,7 +357,25 @@ class ObjectWithDocstring(abc.ABC):
 
         return False
 
-    def _is_valid(self, lines):
+    def _is_valid(self, lines: str) -> tuple[bool, ast.Module | None]:
+        """Whether lines hold a whole signature, parsed with a pass body.
+
+        Parameters
+        ----------
+        lines : str
+            Newline-joined source from the def or class line down.
+
+        Returns
+        -------
+        tuple[bool, ast.Module or None]
+            True and the tree when lines plus an indented pass parse, else
+            False and None.
+
+        Raises
+        ------
+        DocstringUnavailable
+            lines parse alone, so the body is on the signature line.
+        """
         try:
             ast.parse(lines.lstrip())
         except SyntaxError:
@@ -253,24 +389,34 @@ class ObjectWithDocstring(abc.ABC):
         except SyntaxError as e:
             return False, None
 
-    def write_simple_docstring(self):
-        """Writes the generated docstring in the enviroment"""
+    def write_simple_docstring(self) -> None:
+        """Write an empty one-line docstring below the signature.
+
+        Raises
+        ------
+        InvalidSyntax
+            The buffer ends before the signature parses.
+        DocstringUnavailable
+            The object's body is on its signature line.
+        """
         sig_line, indent = self._get_sig()
         docstring = concat_(indent, self.templater.indent, '"""  """')
         self.env.append_after_line(sig_line, docstring)
 
 
 class MethodController(ObjectWithDocstring):
-    def __init__(self, env, templater):
-        super().__init__(env, templater)
+    """A def on the cursor line, documented from its signature and body.
+    """
 
     def _is_bound_method(self) -> bool:
         """True when the def under the cursor is a method that is not static.
 
-        Notes
-        -----
-        - The scan reads indentation only, so a less-indented line inside a
-          multi-line string above the def can end it early.
+        Returns
+        -------
+        bool
+            Can be wrong below a multi-line string with a line left of the
+            def's indent. The scan reads indentation only, and that line
+            ends it.
         """
         def_indent = len(self.env.current_line) - len(self.env.current_line.lstrip())
         in_decorators = True
@@ -290,7 +436,22 @@ class MethodController(ObjectWithDocstring):
                 return stripped.startswith('class ')
         return False
 
-    def _process_tree(self, tree):
+    def _process_tree(
+        self,
+        tree: ast.Module) -> tuple[list[dict], bool, bool, list[str]]:
+        """What the docstring of the def in tree lists.
+
+        Parameters
+        ----------
+        tree : ast.Module
+            The def parsed by `_object_tree`.
+
+        Returns
+        -------
+        tuple[list[dict], bool, bool, list[str]]
+            Arguments, whether it returns, whether it yields, and raised
+            exception names, as `MethodVisitor` collects them.
+        """
         v = MethodVisitor(bound=self._is_bound_method())
         v.visit(tree)
         args = list(v.arguments)
@@ -298,20 +459,53 @@ class MethodController(ObjectWithDocstring):
         return args, v.returns, v.yields, raises
 
     # TODO: set cursor on appropriate position to fill the docstring
-    def write_docstring(self, print_hints=False):
+    def write_docstring(self, print_hints: bool = False) -> None:
+        """Write the def's full docstring below its signature.
+
+        Parameters
+        ----------
+        print_hints : bool, default False
+            True to list each argument's annotation.
+
+        Raises
+        ------
+        InvalidSyntax
+            The def's source does not parse.
+        DocstringUnavailable
+            The def's body is on its signature line.
+        FileNotFoundError
+            styles/ has no method template for the style.
+        """
         sig_line, method_indent, tree = self._object_tree()
         args, returns, yields, raises = self._process_tree(tree)
         docstring = self.templater.get_method_docstring(
-            method_indent, args, returns, yields, raises, print_hints
-        )
+            method_indent,
+            args,
+            returns,
+            yields,
+            raises,
+            print_hints)
         self.env.append_after_line(sig_line, docstring)
 
 
 class ClassController(ObjectWithDocstring):
-    def __init__(self, env, templater):
-        super().__init__(env, templater)
+    """A class on the cursor line, documented from its instance attributes.
+    """
 
-    def _process_tree(self, tree):
+    def _process_tree(self, tree: ast.Module) -> list[str]:
+        """Instance attribute names the class in tree assigns, in source order.
+
+        Parameters
+        ----------
+        tree : ast.Module
+            The class parsed by `_object_tree`.
+
+        Returns
+        -------
+        list[str]
+            Attributes of the instance name `ClassInstanceNameExtractor`
+            finds.
+        """
         x = ClassInstanceNameExtractor()
         x.visit(tree)
         v = ClassVisitor(x.instance_name)
@@ -319,7 +513,23 @@ class ClassController(ObjectWithDocstring):
         att = list(v.attributes)
         return att
 
-    def write_docstring(self, *args, **kwargs):
+    def write_docstring(self, *args: bool, **kwargs: bool) -> None:
+        """Write the class's full docstring below its signature.
+
+        Parameters
+        ----------
+        *args, **kwargs : bool
+            Ignored, so print_hints has no effect on a class.
+
+        Raises
+        ------
+        InvalidSyntax
+            The class's source does not parse.
+        DocstringUnavailable
+            The class's body is on its signature line.
+        FileNotFoundError
+            styles/ has no class template for the style.
+        """
         sig_line, class_indent, tree = self._object_tree()
         attr = self._process_tree(tree)
         docstring = self.templater.get_class_docstring(class_indent, attr)
@@ -327,9 +537,20 @@ class ClassController(ObjectWithDocstring):
 
 
 class Docstring:
-    """Class used by user to generate docstrings"""
+    """The docstring commands for the def or class on Vim's cursor line.
 
-    def __init__(self):
+    Attributes
+    ----------
+    obj_controller : ObjectWithDocstring
+        The controller `_controller_factory` picks for the cursor line.
+
+    Raises
+    ------
+    DocstringUnavailable
+        The cursor line starts no def, async def or class.
+    """
+
+    def __init__(self) -> None:
         env = VimEnviroment()
         style = env.python_style
         indent = env.python_indent
@@ -338,7 +559,30 @@ class Docstring:
 
         self.obj_controller = self._controller_factory(env, templater)
 
-    def _controller_factory(self, env, templater):
+    def _controller_factory(
+        self,
+        env: Enviroment,
+        templater: Templater) -> ObjectWithDocstring:
+        """Controller for the object that env's cursor line starts.
+
+        Parameters
+        ----------
+        env : Enviroment
+            Its current line picks the controller.
+        templater : Templater
+            Passed to the controller.
+
+        Returns
+        -------
+        ObjectWithDocstring
+            MethodController for a def or async def line, ClassController
+            for a class line.
+
+        Raises
+        ------
+        DocstringUnavailable
+            The line starts no def, async def or class.
+        """
         line = env.current_line
         try:
             first_word = re.match(r'^\s*(\w+).*', line).groups()[0]
@@ -357,15 +601,32 @@ class Docstring:
 
         raise DocstringUnavailable('Docstring ERROR: Doctring cannot be created for selected object')
 
-    def full_docstring(self, print_hints=False):
-        """Writes docstring containing arguments, returns, raises, ..."""
+    def full_docstring(self, print_hints: bool = False) -> None:
+        """Write the object's full docstring below its signature.
+
+        Parameters
+        ----------
+        print_hints : bool, default False
+            True to list argument annotations, as :DocstringTypes does.
+
+        Raises
+        ------
+        DocstringUnavailable
+            Any failure, its message prefixed with 'Docstring ERROR: '.
+        """
         try:
             self.obj_controller.write_docstring(print_hints=print_hints)
         except Exception as e:
             raise DocstringUnavailable(concat_('Docstring ERROR: ', e))
 
-    def oneline_docstring(self):
-        """Writes only a one-line empty docstring"""
+    def oneline_docstring(self) -> None:
+        """Write an empty one-line docstring below the object's signature.
+
+        Raises
+        ------
+        DocstringUnavailable
+            Any failure, its message prefixed with 'Docstring ERROR: '.
+        """
         try:
             self.obj_controller.write_simple_docstring()
         except Exception as e:
