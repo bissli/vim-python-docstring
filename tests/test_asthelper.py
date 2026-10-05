@@ -400,8 +400,7 @@ def class_attributes_of(source: str) -> list[str]:
 def test_classmethod_first_argument_is_not_the_instance():
     """Verify a trailing classmethod leaves the instance name to the method.
 
-    Mutation: letting a classmethod set the instance name (lists count,
-    drops x).
+    Mutation: letting a classmethod set the instance name (drops x).
     Oracle: Python binds the class, not the instance, to a classmethod's
     first parameter; README Features, a class docstring lists its
     attributes.
@@ -413,22 +412,23 @@ def test_classmethod_first_argument_is_not_the_instance():
         '    @classmethod\n'
         '    def make(cls):\n'
         '        cls.count = 0\n')
-    assert class_attributes_of(source) == ['x']
+    assert class_attributes_of(source) == ['x', 'count']
 
 
 @pytest.mark.parametrize(
-    'method',
+    ('method', 'expected'),
     [
-        'def __new__(cls):\n        return object.__new__(cls)',
-        'def __init_subclass__(cls):\n        cls.reg = 1',
-        'def __class_getitem__(cls, item):\n        cls.reg = item',
+        ('def __new__(cls):\n        return object.__new__(cls)', ['x']),
+        ('def __init_subclass__(cls):\n        cls.reg = 1', ['x', 'reg']),
+        ('def __class_getitem__(cls, item):\n        cls.reg = item', ['x', 'reg']),
         ],
     ids=['new', 'init-subclass', 'class-getitem'])
-def test_implicit_class_first_methods_are_not_the_instance(method):
+def test_implicit_class_first_methods_are_not_the_instance(method, expected):
     """Verify a trailing undecorated class-first method leaves the name alone.
 
     Mutation: checking only the staticmethod and classmethod decorators
-    (instance name becomes cls, so the class lists [] or ['reg']).
+    (instance name becomes cls, so the class lists [] or ['reg']), or
+    leaving the dunders out of the class-first set (drops reg).
     Oracle: Python's data model docs make __new__ an implicit staticmethod
     taking the class, and __init_subclass__ and __class_getitem__ implicit
     classmethods.
@@ -438,7 +438,7 @@ def test_implicit_class_first_methods_are_not_the_instance(method):
         '    def run(self):\n'
         '        self.x = 1\n'
         f'    {method}\n')
-    assert class_attributes_of(source) == ['x']
+    assert class_attributes_of(source) == expected
 
 
 @pytest.mark.parametrize(
@@ -558,3 +558,67 @@ def test_class_in_method_sets_the_method_instance(nested, expected):
         f'        {nested}'
         '        self.h = H\n')
     assert class_attributes_of(source) == expected
+
+
+@pytest.mark.parametrize(
+    ('body', 'expected'),
+    [
+        (
+            ('    @builtins.classmethod\n'
+             '    def make(klass):\n        klass.count = 0\n'
+             '    def run(self):\n        self.x = 1\n'),
+            ['count', 'x'],
+            ),
+        (
+            ('    def run(self):\n'
+             '        class H:\n'
+             '            @classmethod\n'
+             '            def m(cls):\n                cls.k = 1\n'
+             '        self.h = H\n'),
+            ['h'],
+            ),
+        (
+            ('    def __new__(cls, n):\n'
+             '        self = super().__new__(cls)\n'
+             '        self._n = n\n'
+             '        return self\n'),
+            ['_n'],
+            ),
+        (
+            ('    @classmethod\n'
+             '    def make(cls):\n'
+             '        def f(cls):\n            cls.y = 1\n'
+             '        cls.count = f\n'),
+            ['count'],
+            ),
+        (
+            ('    def __init__(self):\n        pass\n'
+             '    @classmethod\n'
+             '    def make(cls):\n        cls.a, self.b = 1, 2\n'),
+            ['a', 'b'],
+            ),
+        ],
+    ids=[
+        'qualified-then-instance',
+        'class-in-method',
+        'new-builds-self',
+        'nested-def-own-cls',
+        'one-target-both-names',
+        ])
+def test_classmethod_lists_what_it_sets_on_its_class(body, expected):
+    """Verify a class-first method adds its first arg's attributes to self's.
+
+    Mutation: matching only a bare classmethod name or a literal cls
+    (qualified-then-instance drops count), counting the class name in a
+    classmethod of a class defined in a method (class-in-method lists k),
+    counting the class name in place of the instance name (new-builds-self
+    drops _n), keeping it in a nested def with its own cls parameter
+    (nested-def-own-cls lists y), or collecting one name at a time
+    (one-target-both-names lists b first).
+    Oracle: Python binds the class to a classmethod's first parameter
+    whatever its name; H's classmethod sets H.k, never an attribute of A;
+    Fraction.__new__ in the stdlib fractions module sets attributes on the
+    self it builds; a parameter named cls shadows the classmethod's cls;
+    the ClassVisitor docstring promises source order.
+    """
+    assert class_attributes_of(f'class A:\n{body}') == expected

@@ -4,14 +4,16 @@ import ast
 import builtins
 from itertools import chain
 
+CLASS_FIRST_DUNDERS = {'__new__', '__init_subclass__', '__class_getitem__'}
+
 
 class AttributeCollector(ast.NodeVisitor):
-    """Attributes set on one name in an assignment target.
+    """Attributes set on given names in an assignment target.
 
     Parameters
     ----------
-    instance_name : str
-        The name whose attributes count, e.g. self.
+    owner_names : set[str]
+        The names whose attributes count, e.g. {'self', 'cls'}.
 
     Attributes
     ----------
@@ -19,16 +21,16 @@ class AttributeCollector(ast.NodeVisitor):
         Attribute names in visit order. For self.a.b only a counts.
     """
 
-    def __init__(self, instance_name: str) -> None:
-        self.instance_name = instance_name
+    def __init__(self, owner_names: set[str]) -> None:
+        self.owner_names = owner_names
         self.data = {}
         super().__init__()
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        """Add node.attr to data when node is <instance_name>.attr.
+        """Add node.attr to data when node is <owner name>.attr.
         """
         if isinstance(node.value, ast.Name):
-            if node.value.id == self.instance_name:
+            if node.value.id in self.owner_names:
                 self.data[node.attr] = None
         else:
             self.generic_visit(node)
@@ -66,7 +68,7 @@ class ClassInstanceNameExtractor(ast.NodeVisitor):
         """
         positional = [*node.args.posonlyargs, *node.args.args]
         is_static_or_class = (
-            node.name in {'__new__', '__init_subclass__', '__class_getitem__'}
+            node.name in CLASS_FIRST_DUNDERS
             or any(
                 isinstance(decorator, ast.Name)
                 and decorator.id in {'staticmethod', 'classmethod'}
@@ -89,7 +91,7 @@ class ClassInstanceNameExtractor(ast.NodeVisitor):
 
 
 class ClassVisitor(ast.NodeVisitor):
-    """Instance attributes a class assigns anywhere in its body.
+    """Instance and class attributes a class assigns anywhere in its body.
 
     Parameters
     ----------
@@ -100,10 +102,13 @@ class ClassVisitor(ast.NodeVisitor):
     ----------
     attributes : dict[str, None]
         Attribute names of instance_name that an assignment or annotated
-        assignment target sets, in source order. A class nested in the
-        class body adds none. A def inside a method that takes a parameter
-        named instance_name adds none, unless the parameter defaults to
-        instance_name and is not the bound first parameter of a method.
+        assignment target sets, in source order. In a classmethod or a
+        `CLASS_FIRST_DUNDERS` method of the class, attributes of its first
+        argument count too, outside a nested def that takes a parameter of
+        that name. A class nested in the class body adds none. A def inside
+        a method that takes a parameter named instance_name adds none,
+        unless the parameter defaults to instance_name and is not the bound
+        first parameter of a method.
     """
 
     def __init__(self, instance_name: str) -> None:
@@ -113,6 +118,7 @@ class ClassVisitor(ast.NodeVisitor):
         self._class_seen = False
         self._in_method = False
         self._in_class_body = False
+        self._class_name = None
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """Visit the first class met and each class in a method.
@@ -143,6 +149,11 @@ class ClassVisitor(ast.NodeVisitor):
             or (isinstance(decorator, ast.Attribute)
                 and decorator.attr == 'staticmethod')
             for decorator in node.decorator_list)
+        is_class_first = node.name in CLASS_FIRST_DUNDERS or any(
+            (isinstance(decorator, ast.Name) and decorator.id == 'classmethod')
+            or (isinstance(decorator, ast.Attribute)
+                and decorator.attr == 'classmethod')
+            for decorator in node.decorator_list)
         if self._in_class_body and not is_static and positional:
             instance_defaulted.discard(positional[0].arg)
         parameter_names = {
@@ -159,26 +170,35 @@ class ClassVisitor(ast.NodeVisitor):
         if (self._in_method
             and self.instance_name in parameter_names - instance_defaulted):
             return
+        class_name = self._class_name
+        if (self._in_class_body
+            and not self._in_method
+            and is_class_first
+            and positional):
+            self._class_name = positional[0].arg
+        elif self._class_name in parameter_names:
+            self._class_name = None
         in_method, self._in_method = self._in_method, True
         in_class_body, self._in_class_body = self._in_class_body, False
         self.generic_visit(node)
         self._in_method = in_method
         self._in_class_body = in_class_body
+        self._class_name = class_name
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        """Add the instance attributes that node's targets set.
+        """Add the instance and class attributes that node's targets set.
         """
-        ac = AttributeCollector(self.instance_name)
+        ac = AttributeCollector({self.instance_name, self._class_name} - {None})
         for target in node.targets:
             ac.visit(target)
         self.attributes |= ac.data
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        """Add the instance attribute that node's target sets.
+        """Add the instance or class attribute that node's target sets.
         """
-        ac = AttributeCollector(self.instance_name)
+        ac = AttributeCollector({self.instance_name, self._class_name} - {None})
         ac.visit(node.target)
         self.attributes |= ac.data
 

@@ -544,11 +544,11 @@ class MethodController(ObjectWithDocstring):
 
 
 class ClassController(ObjectWithDocstring):
-    """A class on the cursor line, documented from its instance attributes.
+    """A class on the cursor line, documented from its attributes.
     """
 
     def _process_tree(self, tree: ast.Module) -> list[str]:
-        """Instance attribute names the class in tree assigns, in source order.
+        """Attribute names the class in tree assigns, in source order.
 
         Parameters
         ----------
@@ -559,7 +559,8 @@ class ClassController(ObjectWithDocstring):
         -------
         list[str]
             Attributes of the instance name `ClassInstanceNameExtractor`
-            finds.
+            finds, and of the class in its classmethods, as `ClassVisitor`
+            collects them.
         """
         x = ClassInstanceNameExtractor()
         x.visit(tree)
