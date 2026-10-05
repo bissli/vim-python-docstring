@@ -1,0 +1,12 @@
+def foo(self, a, b: int = 1, *, c: "dict[str, int]" = None):
+    def inner():
+        """
+
+        Returns:
+            
+
+        """
+        return 1
+    if a:
+        raise ValueError("bad")
+    return a

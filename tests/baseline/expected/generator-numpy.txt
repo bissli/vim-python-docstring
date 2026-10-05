@@ -1,0 +1,14 @@
+def gen(n,
+        m='foo(c,d)'):
+    """
+
+    Parameters
+    ----------
+    n :
+    m :
+
+    Yields
+    ------
+
+    """
+    yield n

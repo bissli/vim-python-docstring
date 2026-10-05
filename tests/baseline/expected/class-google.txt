@@ -1,0 +1,16 @@
+class Thing:
+    """
+
+    Attributes:
+        a:
+        b:
+        c:
+
+    """
+    def __init__(this, x):
+        this.a = x
+        this.b: int = 2
+        this.c.d = 3
+
+    def other(self):
+        self.e = 4

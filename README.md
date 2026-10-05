@@ -18,11 +18,21 @@ def foo(a='foo(c,d)',
 
 
 ## Installation
-If you use for example Vundle, add `Plugin 'bissli/vim-python-docstring'` to your `.vimrc` file.
+The plugin needs Vim built with Python 3.11 or newer, or Neovim whose Python provider runs 3.11 or newer. Neovim's provider is `pynvim`: `pip3 install pynvim`.
 
-Alternatively if you have Vim 8 and newer, you can clone this repository into `~/.vim/pack/<whatever>/start/` where `<whatever>` is *whatever* you want it to be.
+`install.sh` creates a plugin-local `.venv` and installs the dependencies pinned in `requirements.txt` into `.venv/deps`, the one directory the plugin adds to Vim's Python path. The script runs on Linux and macOS. A plugin manager runs it after each install or update:
 
-If you have **neovim**, install python provider first: `pip3 install pynvim`.
+~~~{viml}
+" vim-plug
+Plug 'bissli/vim-python-docstring', { 'do': './install.sh' }
+~~~
+
+~~~{lua}
+-- lazy.nvim
+{ 'bissli/vim-python-docstring', build = './install.sh' }
+~~~
+
+With a manager that has no build hook, or with a manual clone into `~/.vim/pack/<name>/start/`, the user runs `./install.sh` once in the plugin directory.
 
 ## Usage
 The plugin has only commands which you can map however you like (i use `<leader>ss` for `:Docstring`).
@@ -32,8 +42,8 @@ The plugin has only commands which you can map however you like (i use `<leader>
 
 The plugin uses these commands:
 
-| Command       | Description |
-|---------------|-------------|
+| Command | Description |
+| ------- | ----------- |
 | Docstring     | Create full docstring
 | DocstringTypes| Just like `:Docstring` but includes type hints
 | DocstringLine | Create empty one-line docstring
@@ -64,7 +74,7 @@ let g:python_style = 'google'
 ## Development
 Pull requests are welcome as are feature request and issue reports.
 
+The tests need `.venv/bin/pip install pytest`, then run with `.venv/bin/pytest`. `tests/integration` drives a real `vim` on `PATH`. The rest run against a stub `vim` module.
+
 You can encounter some situations in which the plugin may not work as expected.
 Most notably there *may* be issues if your keyword for refering to instance is not `self` -- in such case it *may* be added to the list of arguments.
-
-There are [more unsolved issues](ISSUES.md).

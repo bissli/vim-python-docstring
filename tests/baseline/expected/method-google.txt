@@ -1,0 +1,20 @@
+def foo(self, a, b: int = 1, *, c: "dict[str, int]" = None):
+    """
+
+    Args:
+        a:
+        b:
+        c:
+
+    Returns:
+        
+
+    Raises:
+        ValueError:
+
+    """
+    def inner():
+        return 1
+    if a:
+        raise ValueError("bad")
+    return a

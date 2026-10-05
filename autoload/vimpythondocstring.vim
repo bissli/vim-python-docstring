@@ -7,9 +7,16 @@ import vim
 plugin_root_dir = vim.eval('s:plugin_root_dir')
 scr = join(plugin_root_dir, '..', 'python')
 python_root_dir = normpath(join(plugin_root_dir, '..', 'python'))
-deps = [scr]
+# install.sh puts only requirements.txt here. The venv's own
+# site-packages stays off sys.path so its pip and setuptools never
+# shadow Vim's.
+deps = [scr, join(plugin_root_dir, '..', '.venv', 'deps')]
 sys.path[0:0] = deps
-import pydocstring
+try:
+    import pydocstring
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        f'vim-python-docstring: {exc.name} is missing, run install.sh in the plugin directory') from exc
 EOF
 
 function! s:handle_error(exception)

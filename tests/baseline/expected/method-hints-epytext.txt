@@ -1,0 +1,15 @@
+def foo(self, a, b: int = 1, *, c: "dict[str, int]" = None):
+    """
+    @param a:
+    @param b:
+    @param c:
+    @type b: int
+    @type c: 'dict[str, int]'
+    @return:
+    @raise ValueError:
+    """
+    def inner():
+        return 1
+    if a:
+        raise ValueError("bad")
+    return a

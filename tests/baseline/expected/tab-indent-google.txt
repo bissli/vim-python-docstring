@@ -1,0 +1,16 @@
+def tabbed(a):
+	"""
+
+	Args:
+		a:
+
+	Returns:
+		
+
+	Raises:
+		KeyError:
+
+	"""
+	if a:
+		raise KeyError(a)
+	return a

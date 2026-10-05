@@ -1,0 +1,10 @@
+class Outer:
+    def method(self, x):
+        """
+        @param x:
+        @return:
+        """
+        # comment at the body's indent
+
+        return x
+    other = 1

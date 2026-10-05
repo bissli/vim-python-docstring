@@ -1,0 +1,9 @@
+def tabbed(a):
+	"""
+	:param a:
+	:returns:
+	:raises KeyError:
+	"""
+	if a:
+		raise KeyError(a)
+	return a
