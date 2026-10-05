@@ -45,7 +45,8 @@ class ClassInstanceNameExtractor(ast.NodeVisitor):
         The first positional argument of __init__, else of the last method
         that has one and is not a staticmethod or classmethod, else 'self'.
         __new__, __init_subclass__ and __class_getitem__ count as such
-        without a decorator. A nested class's methods never count.
+        without a decorator. A decorator counts by its last name, so
+        @builtins.classmethod does too. A nested class's methods never count.
     set : bool
         True once __init__ has set instance_name.
     """
@@ -70,8 +71,10 @@ class ClassInstanceNameExtractor(ast.NodeVisitor):
         is_static_or_class = (
             node.name in CLASS_FIRST_DUNDERS
             or any(
-                isinstance(decorator, ast.Name)
-                and decorator.id in {'staticmethod', 'classmethod'}
+                (isinstance(decorator, ast.Name)
+                 and decorator.id in {'staticmethod', 'classmethod'})
+                or (isinstance(decorator, ast.Attribute)
+                    and decorator.attr in {'staticmethod', 'classmethod'})
                 for decorator in node.decorator_list))
         if not positional or is_static_or_class:
             return

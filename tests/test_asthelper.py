@@ -622,3 +622,31 @@ def test_classmethod_lists_what_it_sets_on_its_class(body, expected):
     the ClassVisitor docstring promises source order.
     """
     assert class_attributes_of(f'class A:\n{body}') == expected
+
+
+@pytest.mark.parametrize(
+    ('method', 'expected'),
+    [
+        (
+            ('    @builtins.classmethod\n'
+             '    def make(klass):\n        klass.count = 0\n'),
+            ['x', 'count'],
+            ),
+        (
+            ('    @builtins.staticmethod\n'
+             '    def make(cfg):\n        cfg.port = 1\n'),
+            ['x'],
+            ),
+        ],
+    ids=['qualified-classmethod', 'qualified-staticmethod'])
+def test_trailing_qualified_decorator_leaves_the_instance_name(method, expected):
+    """Verify a trailing @builtins.classmethod or staticmethod keeps self.
+
+    Mutation: matching only a bare decorator name in
+    ClassInstanceNameExtractor (instance name becomes klass or cfg, so x
+    drops out).
+    Oracle: builtins.classmethod is classmethod, so Python binds the class
+    to klass; builtins.staticmethod binds nothing to cfg.
+    """
+    source = f'class A:\n    def run(self):\n        self.x = 1\n{method}'
+    assert class_attributes_of(source) == expected
