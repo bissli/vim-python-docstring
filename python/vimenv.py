@@ -1,5 +1,6 @@
-import vim
 import abc
+
+import vim
 
 
 class Enviroment(abc.ABC):
@@ -46,6 +47,11 @@ class Enviroment(abc.ABC):
         """
 
     @abc.abstractmethod
+    def lines_preceding_cursor(self):
+        """Lines above the cursor, nearest first.
+        """
+
+    @abc.abstractmethod
     def lines_following_cursor(self):
         """Generator that iterates lines in buffer, starting from current line."""
 
@@ -64,21 +70,21 @@ class VimEnviroment(Enviroment):
 
     @property
     def plugin_root_dir(self):
-        return self._get_var("s:plugin_root_dir")
+        return self._get_var('s:plugin_root_dir')
 
     @property
     def python_style(self):
         if not int(vim.eval('exists("g:python_style")')):
-            return "google"
+            return 'google'
         else:
-            return self._get_var("g:python_style")
+            return self._get_var('g:python_style')
 
     @property
     def python_indent(self):
         if not int(vim.eval('exists("g:vpd_indent")')):
-            return "    "
+            return '    '
         else:
-            return self._get_var("g:vpd_indent")
+            return self._get_var('g:vpd_indent')
 
     @property
     def current_line_nr(self):
@@ -90,8 +96,13 @@ class VimEnviroment(Enviroment):
 
     def append_after_line(self, line_nr, text):
         line_nr += 1
-        for line in reversed(text.split("\n")):
+        for line in reversed(text.split('\n')):
             vim.current.buffer.append(line, line_nr)
+
+    def lines_preceding_cursor(self):
+        buffer = vim.current.buffer
+        for row in range(vim.current.window.cursor[0] - 2, -1, -1):
+            yield buffer[row]
 
     def lines_following_cursor(self):
         import vim
@@ -101,6 +112,6 @@ class VimEnviroment(Enviroment):
         current_row = cursor_row
         while True:
             if current_row > len(vim.current.buffer) - 1:
-                raise StopIteration("Buffer is out of lines.")
+                return
             yield current_row, buffer[current_row]
             current_row += 1

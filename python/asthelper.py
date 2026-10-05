@@ -1,14 +1,6 @@
 import ast
+import builtins
 from itertools import chain
-
-
-class RaiseNameCollector(ast.NodeVisitor):
-    def __init__(self):
-        self.data = set()
-        super().__init__()
-
-    def visit_Call(self, node):
-        self.data.add(node.func.id)
 
 
 class AttributeCollector(ast.NodeVisitor):
@@ -62,23 +54,45 @@ class ClassVisitor(ast.NodeVisitor):
 
 
 class MethodVisitor(ast.NodeVisitor):
-    """Gathers information about a method
+    """What one function's docstring lists: arguments, raises, returns, yields.
+
+    Parameters
+    ----------
+    parent : bool, default True
+        False for a nested function. Only its raises merge into the
+        enclosing function.
+    bound : bool, default False
+        True for a method that takes its instance or class first, so the
+        first argument is dropped whatever its name. A first argument named
+        self or cls is dropped either way.
 
     Attributes
-        arguments: arguments of the method
-        parent: indicated whether this method is inside another
-        raises: set of raised exceptions
-        returns: True if method returns
-        yields: True is method yields
-
+    ----------
+    arguments : list[dict]
+        {'arg': name, 'type': annotation source or None} per positional-only,
+        regular and keyword-only argument, with the first positional one
+        dropped as `bound` says.
+    raises : dict[str, None]
+        Raised exception names as written, e.g. 'errors.Foo', in source order.
+        A name whose last part, past leading underscores, starts lower case
+        (err, self.error) counts as a variable, and an all-caps one longer
+        than a letter (ERRORS) as a constant; both are left out. A raise that a handler of its `try`
+        catches is left out unless the handler re-raises it.
+    returns : bool
+        True if the function has a return statement.
+    yields : bool
+        True if the function yields.
     """
 
-    def __init__(self, parent=True):
+    def __init__(self, parent: bool = True, bound: bool = False) -> None:
         self.parent = parent
+        self.bound = bound
         self.arguments = []
-        self.raises = set()
+        self.raises = {}
         self.returns = False
         self.yields = False
+        self._handlers = []
+        self._caught_by_handler = {}
         super().__init__()
 
     def _handle_functions(self, node):
@@ -87,24 +101,129 @@ class MethodVisitor(ast.NodeVisitor):
         self.raises |= new_visitor.raises
 
         if self.parent:
-            for arg in chain(node.args.args, node.args.kwonlyargs):
+            positional = [*node.args.posonlyargs, *node.args.args]
+            if positional and (self.bound or positional[0].arg in {'self', 'cls'}):
+                positional.pop(0)
+            for arg in chain(positional, node.args.kwonlyargs):
                 type_hint = None
                 if arg.annotation is not None:
                     type_hint = ast.unparse(arg.annotation)
                 self.arguments.append({'arg': arg.arg, 'type': type_hint})
-            if len(self.arguments) > 0 and (
-                self.arguments[0]['arg'] == 'self' or self.arguments[0]['arg'] == 'cls'
-            ):
-                self.arguments.pop(0)
 
             self.returns = new_visitor.returns
             self.yields = new_visitor.yields
 
-    def visit_Raise(self, node):
-        r = RaiseNameCollector()
-        r.visit(node)
-        self.raises |= r.data
+    def _raised_names(self, expr: ast.expr | None) -> list[str]:
+        """Exception class names a raised expression can produce, as written.
+
+        Parameters
+        ----------
+        expr : ast.expr or None
+            The expression after `raise`, or a handler's caught type.
+
+        Returns
+        -------
+        list[str]
+            A call gives its callee, and `X(...).with_traceback(tb)` gives X.
+            `a or B()` and `B() if c else C()` give each branch. Anything else,
+            e.g. `make()()` or `errs[0]`, gives nothing.
+        """
+        if isinstance(expr, ast.BoolOp):
+            return [name for value in expr.values for name in self._raised_names(value)]
+        if isinstance(expr, ast.IfExp):
+            return self._raised_names(expr.body) + self._raised_names(expr.orelse)
+        if isinstance(expr, ast.Call):
+            callee = expr.func
+            if isinstance(callee, ast.Attribute) and callee.attr == 'with_traceback':
+                return self._raised_names(callee.value)
+            expr = callee
+        root = expr
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return []
+        last_part = expr.attr if isinstance(expr, ast.Attribute) else expr.id
+        last_part = last_part.lstrip('_')
+        is_constant = len(last_part) > 1 and last_part.isupper()
+        is_class_name = last_part[:1].isupper() and not is_constant
+        return [ast.unparse(expr)] if is_class_name else []
+
+    def _handler_types(self, handler: ast.ExceptHandler) -> list[str]:
+        """Class names an except clause catches; empty for a bare `except:`.
+        """
+        if isinstance(handler.type, ast.Tuple):
+            return [
+                name for elt in handler.type.elts for name in self._raised_names(elt)
+                ]
+        return self._raised_names(handler.type)
+
+    def _catches(self, handler: ast.ExceptHandler, name: str) -> bool:
+        """True if handler catches the exception class written as name.
+
+        Parameters
+        ----------
+        handler : ast.ExceptHandler
+            One except clause.
+        name : str
+            A name from `_raised_names`.
+
+        Returns
+        -------
+        bool
+            A bare `except:` catches all. Two builtin classes match by
+            subclass, so LookupError catches KeyError. A name that is not a
+            builtin class counts as an Exception subclass, so Exception and
+            BaseException catch it. Otherwise only the exact name matches.
+        """
+        if handler.type is None:
+            return True
+        raised_class = getattr(builtins, name, None)
+        for caught_name in self._handler_types(handler):
+            caught_class = getattr(builtins, caught_name, None)
+            if isinstance(raised_class, type) and isinstance(caught_class, type):
+                if issubclass(raised_class, caught_class):
+                    return True
+            elif caught_name in {name, 'Exception', 'BaseException'}:
+                return True
+        return False
+
+    def visit_Raise(self, node: ast.Raise) -> None:
+        if node.exc is None:
+            handler = self._handlers[-1] if self._handlers else None
+        elif isinstance(node.exc, ast.Name):
+            handler = next(
+                (h for h in reversed(self._handlers) if h.name == node.exc.id), None)
+        else:
+            handler = None
+        if handler is not None:
+            raised_names = (
+                self._caught_by_handler.get(handler) or self._handler_types(handler))
+        else:
+            raised_names = self._raised_names(node.exc)
+        for name in raised_names:
+            self.raises[name] = None
         super().generic_visit(node)
+
+    def visit_Try(self, node: ast.Try | ast.TryStar) -> None:
+        enclosing_raises, self.raises = self.raises, {}
+        for statement in node.body:
+            self.visit(statement)
+        body_raises, self.raises = self.raises, enclosing_raises
+        for name in body_raises:
+            handler = next((h for h in node.handlers if self._catches(h, name)), None)
+            if handler is None:
+                self.raises[name] = None
+            else:
+                self._caught_by_handler.setdefault(handler, []).append(name)
+        for statement in [*node.handlers, *node.orelse, *node.finalbody]:
+            self.visit(statement)
+
+    visit_TryStar = visit_Try
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        self._handlers.append(node)
+        super().generic_visit(node)
+        self._handlers.pop()
 
     def visit_Yield(self, node):
         self.yields = True
