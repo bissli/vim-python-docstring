@@ -104,3 +104,7 @@ counts as an `Exception` subclass, so `except Exception` catches it, but
 otherwise matches only by its exact name: `except AppError` leaves
 `raise AppTimeout()` in the list even when `AppTimeout` subclasses
 `AppError`.
+
+## License
+The plugin is free software under the GNU General Public License,
+version 3. `LICENSE` holds the full text.
